@@ -159,3 +159,165 @@ class Lidar(Sensor):
                 geoms.append(ray)
                 geoms.append(ray_circ)
         return geoms
+
+
+class AgentsPoses(Sensor):
+    """Sensor that measures the poses of other agents in the world"""
+
+    def __init__(
+        self,
+        world: vmas.simulator.core.World,
+        entity_filter: Callable[[vmas.simulator.core.Entity], bool] = lambda _: True,
+        neighbors: int = 1,
+    ):
+        super().__init__(world)
+        self._entity_filter = entity_filter
+        self._k = neighbors
+
+    @property
+    def entity_filter(self):
+        return self._entity_filter
+
+    @entity_filter.setter
+    def entity_filter(
+        self, entity_filter: Callable[[vmas.simulator.core.Entity], bool]
+    ):
+        self._entity_filter = entity_filter
+
+    def find_k_agents_distances(
+        self,
+        entity_filter: Callable[[vmas.simulator.core.Entity], bool] = lambda _: False,
+    ):
+        """
+
+        Returns the indexes of the k nearest agents in the obs_range,
+        excluding the agent itself,
+        and filtered by the entity_filter,
+        if the k nearest agents are less than k,
+        the rest of the indexes are filled with -1
+
+        """
+        agents = []
+        distances = []
+        for i, agent in enumerate(self._world.agents):
+            if agent is self.agent or entity_filter(agent):
+                continue
+            dist = (agent.state.pos - self.agent.state.pos).norm(dim=-1)
+            # if the agent is in the observation range
+            # since it is a tensor, we need to use the all method
+            if (dist > self.agent._obs_range).all():
+                continue
+            dist = torch.where(
+                dist < self.agent._obs_range,
+                dist,
+                torch.tensor(torch.inf, device=self._world.device),
+            )
+
+            agent_index = torch.full(
+                (self._world.batch_dim,),
+                fill_value=i,
+                dtype=torch.int64,
+                device=self._world.device,
+            )
+
+            agent_index = torch.where(
+                dist < self.agent._obs_range, agent_index, torch.tensor(-1)
+            )
+
+            # for the agents that are not in the observation range
+            distances.append(dist)
+            agents.append(agent_index)
+
+        # sort the agents by distance
+
+        if len(agents) < self._k:
+            n_pad = self._k - len(agents)
+            agent_pad_tensor = torch.full(
+                (self._world.batch_dim,),
+                fill_value=-1,
+                dtype=torch.int64,
+                device=self._world.device,
+            )
+            dist_pad_tensor = torch.full(
+                (self._world.batch_dim,),
+                fill_value=torch.inf,
+                device=self._world.device,
+            )
+            agents.extend([agent_pad_tensor] * n_pad)
+            distances.extend([dist_pad_tensor] * n_pad)
+        agents = torch.stack(agents)
+        distances = torch.stack(distances)
+        _, indexes = torch.topk(distances, self._k, largest=False, dim=0, sorted=True)
+        return torch.gather(agents, 0, indexes), torch.gather(distances, 0, indexes)
+
+    def measure(self):
+        """Returns the poses of the k nearest agents in the obs_range"""
+        indexes, distances = self.find_k_agents_distances()
+        # add axis to the indexes
+        indexes_agents = indexes.unsqueeze(-1)
+        indexes_agents = indexes_agents.repeat(1, 1, 2)
+        agents = self._world.agents
+        agents = torch.stack([agent.state.pos for agent in agents], dim=0)
+
+        # if some indexes_agents are -1, we need to fill them with zeros
+        # to avoid indexing errors
+        # we need to use the where method to avoid indexing errors
+
+        # poses = torch.gather(agents, 0, indexes)  # (batch_dim, k, 2)
+
+        poses = torch.gather(agents, 0, indexes_agents.clip(min=0))
+        # replace the -1 indexes with zeros
+
+        relative_poses = poses - self.agent.state.pos.unsqueeze(0)  # (batch_dim, k, 2)
+        angles = torch.atan2(relative_poses[..., 1], relative_poses[..., 0])
+        if (indexes == -1).any():
+            angles = torch.where(
+                indexes != -1, angles, torch.tensor(0.0, device=self._world.device)
+            )
+            distances = torch.where(
+                indexes != -1, distances, torch.tensor(0.0, device=self._world.device)
+            )
+        return (
+            torch.stack([distances, angles], dim=-1)
+            .permute(1, 0, 2)
+            .flatten(start_dim=1)
+        )  # (batch_dim, 2 * k)
+
+    # TODO: Implement the to method
+    # use the same implementation of the applr gym
+    # agents distance and relative angle
+    # filtered to the nearest k and capped by the observation range
+    # do not include the agent itself
+    # return a tensor of shape (batch_dim, 2 * k)
+    # the first element of each pair is the distance
+    # the second element of each pair is the relative angle
+
+    def render(self, env_index: int = 0) -> "List[Geom]":
+        from vmas.simulator import rendering
+
+        """Renders the poses of all agents in the world as a line that connects the agents position to the agent in exam position"""
+        geoms: List[rendering.Geom] = []
+        agents = [
+            agent
+            for agent in self._world.agents
+            if agent is not self.agent and not self._entity_filter(agent)
+        ]
+        # Render the line between the agent and the other agents in the observation range
+        # only render the k nearest agents
+        # sorted by distance
+        agents.sort(
+            key=lambda agent: (agent.state.pos - self.agent.state.pos).norm(dim=-1)
+        )
+
+        for agent in agents[: self._k]:
+            line = rendering.Line(
+                self.agent.state.pos[env_index],
+                agent.state.pos[env_index],
+                width=0.05,
+            )
+            line.set_color(1, 0, 0)
+            geoms.append(line)
+        return geoms
+
+    def to(self, device: torch.device):
+        pass

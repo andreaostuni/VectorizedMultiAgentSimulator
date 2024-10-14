@@ -16,6 +16,7 @@ __all__ = [
     "scenarios",
     "debug_scenarios",
     "mpe_scenarios",
+    "social_scenarios",
 ]
 
 __version__ = "1.4.3"
@@ -79,3 +80,10 @@ mpe_scenarios = sorted(
     ]
 )
 """List of the vmas MPE scenarios """
+
+social_scenarios = sorted(
+    [
+        "social_navigation",
+    ]
+)
+"""List of the vmas social scenarios """
