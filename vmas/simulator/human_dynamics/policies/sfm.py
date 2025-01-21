@@ -92,6 +92,8 @@ class SocialForcePolicy(torch.nn.Module):
         force_factor_group_gaze: float = 3.0,
         force_factor_group_coherence: float = 2.0,
         force_factor_group_repulsion: float = 1.0,
+        obstacle_max_dist: float = 2.0,
+        agent_max_dist: float = 1.5,
         lambda_: float = 2.0,
         gamma: float = 0.35,
         n: float = 2.0,
@@ -122,6 +124,8 @@ class SocialForcePolicy(torch.nn.Module):
           force_factor_group_gaze: 3.0
           force_factor_group_coherence: 2.0
           force_factor_group_repulsion: 1.0
+          obstacle_max_dist: 2.0
+          agent_max_dist: 2.0
           lambda_: 2.0
           gamma: 0.35
           n: 2.0
@@ -145,6 +149,8 @@ class SocialForcePolicy(torch.nn.Module):
         self.force_factor_group_gaze = force_factor_group_gaze
         self.force_factor_group_coherence = force_factor_group_coherence
         self.force_factor_group_repulsion = force_factor_group_repulsion
+        self.obstacle_max_dist = obstacle_max_dist
+        self.agent_max_dist = agent_max_dist
         self.lambda_ = lambda_
         self.gamma = gamma
         self.n = n
@@ -176,8 +182,8 @@ class SocialForcePolicy(torch.nn.Module):
           (x, y, vx, vy, radius, goal_x, goal_y, group_id)
         """
         forces = self.compute_forces(agents, box_obstacles, sphere_obstacles, lines)
-        agents = self.update_position(agents, forces, self.time_step)
-
+        # agents = self.update_position(agents, forces, self.time_step)
+        self.update_position(agents, forces, self.time_step)
         return agents
 
     def compute_forces(
@@ -260,7 +266,7 @@ class SocialForcePolicy(torch.nn.Module):
         desired_force = (
             self.force_factor_desired
             * condition
-            * (desired_direction * agents[:, :, 4:5] - agents[:, :, 2:4])
+            * (desired_direction * self.max_speed - agents[:, :, 2:4])
             / self.relaxation_time
             + (1 - condition) * -agents[:, :, 2:4] / self.relaxation_time
         )  # (envs, n_agents, 2)
@@ -290,7 +296,6 @@ class SocialForcePolicy(torch.nn.Module):
           obstacle_force.shape = (envs, n_agents, 2)
         """
         envs, n_agents, n_features = agents.shape
-        obstacle_force = torch.zeros(envs, n_agents, 2)
         # extend the agent tensor to have the same shape as the obstacles
         box_obstacles_num = 0 if box_obstacles is None else box_obstacles.shape[1]
         sphere_obstacles_num = (
@@ -301,10 +306,10 @@ class SocialForcePolicy(torch.nn.Module):
         obstacles_dim = box_obstacles_num + sphere_obstacles_num + lines_num
 
         closest_points = torch.zeros(
-            envs, n_agents, obstacles_dim, 2
+            envs, n_agents, obstacles_dim, 2, device=self.device
         )  # (envs, n_agents, n_obstacles, 2)
         distances = torch.zeros(
-            envs, n_agents, obstacles_dim
+            envs, n_agents, obstacles_dim, device=self.device
         )  # (envs, n_agents, n_obstacles)
 
         if box_obstacles is not None:
@@ -349,27 +354,40 @@ class SocialForcePolicy(torch.nn.Module):
 
         # compute the obstacle force for each agent
 
-        min_diff = closest_points[:, :, :, :2] - agents[:, :, :2].unsqueeze(
-            2
-        )  # (envs, n_agents, n_obstacles, 2)
+        min_diff = agents[:, :, :2].unsqueeze(2) - closest_points[:, :, :, :2]
+        # (envs, n_agents, n_obstacles, 2)
 
         diff_direction = min_diff / (
-            distances.unsqueeze(-1) + 1e-8
+            torch.norm(min_diff, dim=-1, keepdim=True) + 1e-8
         )  # (envs, n_agents, n_obstacles, 2)
 
         obstacle_force = (
             self.force_factor_obstacle
-            * torch.exp(
-                agents[:, :, 4:5].unsqueeze(2)
-                - distances.unsqueeze(-1) / self.force_sigma_obstacle
-            )
+            * torch.exp(-distances.unsqueeze(-1) / self.force_sigma_obstacle)
             * diff_direction
         )  # (envs, n_agents, n_obstacles, 2)
 
-        # sum the obstacle forces from all obstacles to get
-        # the total obstacle force for the agent
+        # if the distance is greater than the obstacle max distance
+        # the obstacle force is 0
+        obstacle_force = torch.where(
+            distances.unsqueeze(-1) > self.obstacle_max_dist,
+            torch.zeros_like(obstacle_force),
+            obstacle_force,
+        )  # (envs, n_agents, n_obstacles, 2)
 
-        return obstacle_force.sum(dim=2)  # (envs, n_agents, 2)
+        # get the number of active obstacles
+        active_obstacles = torch.where(
+            distances < self.obstacle_max_dist, 1.0, 0.0
+        ).sum(
+            dim=-1
+        )  # (envs, n_agents)
+
+        # sum the obstacle forces from all obstacles to get
+        # the total obstacle force for the agent weighted
+        # by the number of active obstacles
+
+        return obstacle_force.sum(dim=2) / (active_obstacles.unsqueeze(-1) + 1e-8)
+        # (envs, n_agents, 2)
 
     def compute_social_force(self, agents: torch.Tensor) -> torch.Tensor:
         """Compute the social force for agents in the simulation.
@@ -416,13 +434,13 @@ class SocialForcePolicy(torch.nn.Module):
         B = self.gamma * interaction_length  # B parameter
         force_velocity_amount = -torch.exp(
             -torch.norm(diff, dim=-1, keepdim=True) / (B + 1e-8)
-            - torch.pow(self.n_prime * B * theta, 2)
+            - torch.pow(self.n_prime * B * theta.unsqueeze(-1), 2)
         )  # force velocity amount f
         # (n_envs, n_agents, n_agents, 1)
 
-        force_angle_amount = -torch.sign(theta) * torch.exp(
+        force_angle_amount = -torch.sign(theta.unsqueeze(-1)) * torch.exp(
             -torch.norm(diff, dim=-1, keepdim=True) / (B + 1e-8)
-            - torch.pow(self.n * B * theta, 2)
+            - torch.pow(self.n * B * theta.unsqueeze(-1), 2)
         )  # force angle amount (n_envs, n_agents, n_agents, 1)
         force_velocity = (
             force_velocity_amount * interaction_direction
@@ -442,6 +460,13 @@ class SocialForcePolicy(torch.nn.Module):
         social_force[:, idx, idx] = 0.0
         # obtain the social force for the single agent as
         # the sum of the social forces from all other agents
+
+        # set to 0 the social force for agents that are not neighbors
+        social_force = torch.where(
+            torch.norm(diff, dim=-1, keepdim=True) > self.agent_max_dist,
+            torch.zeros_like(social_force),
+            social_force,
+        )
 
         return social_force.sum(dim=2)  # (n_envs, n_agents, 2)
 
@@ -494,7 +519,7 @@ class SocialForcePolicy(torch.nn.Module):
         # compute the vision angle
         vision_angle = torch.pi / 2
         # compute the element product
-        ## TODO: use the desired direction instead of the velocity
+        # TODO: use the desired direction instead of the velocity
         element_product = torch.sum(
             agents[:, :, 5:7].unsqueeze(1) * relative_com, dim=-1
         )  # (envs, n_agents, n_groups)
@@ -511,11 +536,11 @@ class SocialForcePolicy(torch.nn.Module):
         )  # (envs, n_agents, n_groups)
 
         # compute the necessary rotation
-        ## TODO: use the desired direction instead of the velocity
+        # TODO: use the desired direction instead of the velocity
         desired_direction_distance = (
             element_product / torch.norm(agents[:, :, 5:7], dim=-1) ** 2
         )  # (envs, n_agents, n_groups)
-        ## TODO: use the desired direction instead of the velocity
+        # TODO: use the desired direction instead of the velocity
         group_gaze_force = (
             desired_direction_distance * agents[:, :, 5:7]
         )  # (envs, n_agents, n_groups)
@@ -629,4 +654,4 @@ class SocialForcePolicy(torch.nn.Module):
         agents[:, :, :2] += agents[:, :, 2:4] * dt  # (envs, n_agents, 2)
         # movement = agents[:, :, :2] - init_pos  # (envs, n_agents, 2)
         # TODO implement the cyclic goals logic for the agents
-        return agents
+        # return agents
