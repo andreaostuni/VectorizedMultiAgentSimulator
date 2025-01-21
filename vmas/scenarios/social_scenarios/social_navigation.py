@@ -8,7 +8,7 @@ import torch
 from torch import Tensor
 
 from vmas import render_interactively
-from vmas.simulator.core import Agent, Entity, Landmark, Sphere, World
+from vmas.simulator.core import Agent, Entity, Landmark, Sphere, World, Box
 from vmas.simulator.heuristic_policy import BaseHeuristicPolicy
 from vmas.simulator.scenario import BaseScenario
 from vmas.simulator.sensors import Lidar, AgentsPoses
@@ -17,7 +17,10 @@ from vmas.simulator.utils import Color, ScenarioUtils, X, Y
 from vmas.simulator.dynamics.diff_drive import DiffDrive
 from vmas.simulator.dynamics.holonomic import Holonomic
 
-from vmas.simulator.human_simulation import HumanSimulation
+# from vmas.simulator.human_dynamics.human_simulation import HumanSimulation
+from vmas.simulator.human_dynamics.human_simulation_sfm import HumanSimulation
+
+# from vmas.simulator.human_dynamics.roadmap import find_vertices
 
 if typing.TYPE_CHECKING:
     from vmas.simulator.rendering import Geom
@@ -26,7 +29,10 @@ if typing.TYPE_CHECKING:
 class Scenario(BaseScenario):
     def make_world(self, batch_dim: int, device: torch.device, **kwargs):
         self.plot_grid = False
-        self.n_agents = kwargs.pop("n_agents", 4)
+        self.fixed_passage = kwargs.pop("fixed_passage", False)
+        self.n_agents = kwargs.pop("n_agents", 1)
+
+        self.n_scripted_agents = kwargs.pop("n_scripted_agents", 1)  # scripted agents
         self.collisions = kwargs.pop("collisions", True)
 
         self.world_spawning_x = kwargs.pop(
@@ -47,6 +53,9 @@ class Scenario(BaseScenario):
         self.agent_radius = kwargs.pop("agent_radius", 0.1)
         self.comms_range = kwargs.pop("comms_range", 0)
         self.n_lidar_rays = kwargs.pop("n_lidar_rays", 12)
+
+        self.n_passages = kwargs.pop("n_passages", 3)
+        self.middle_angle_180 = kwargs.pop("middle_angle_180", False)
 
         self.shared_rew = kwargs.pop("shared_rew", True)
         self.pos_shaping_factor = kwargs.pop("pos_shaping_factor", 1)
@@ -97,6 +106,15 @@ class Scenario(BaseScenario):
             (0.89, 0.10, 0.11),
             (0.87, 0.87, 0),
         ]
+        # Random colors for agents till the known colors are exhausted
+
+        if self.n_agents + self.n_scripted_agents > len(known_colors):
+            # random tuples of 3
+            for i in range(self.n_agents + self.n_scripted_agents - len(known_colors)):
+                known_colors.append(
+                    (torch.rand(1).item(), torch.rand(1).item(), torch.rand(1).item())
+                )
+
         colors = torch.randn(
             (max(self.n_agents - len(known_colors), 0), 3), device=device
         )
@@ -106,13 +124,19 @@ class Scenario(BaseScenario):
             time_step=world.dt,
             neighbor_dist=self.lidar_range,
             max_neighbors=3,
-            time_horizon=100 * world.dt,
-            time_horizon_obst=100 * world.dt,
+            time_horizon=30 * world.dt,
+            time_horizon_obst=10 * world.dt,
             radius=self.agent_radius,
             max_speed=0.5,
             world=world,
             safety_space=0.1,
         )
+
+        self.middle_angle = torch.zeros((world.batch_dim, 1), device=world.device)
+        self.passage_width = self.agent_radius
+        self.passage_length = self.agent_radius * 3 + 0.1
+        self.scenario_length = 2 + 2 * self.agent_radius
+        self.n_boxes = int(self.scenario_length // self.passage_length)
 
         # Add agents
         for i in range(self.n_agents):
@@ -123,55 +147,33 @@ class Scenario(BaseScenario):
             )
 
             # Constraint: all agents have same action range and multiplier
-            if i < 2:
-                agent = Agent(
-                    name=f"agent_{i}",
-                    collide=self.collisions,
-                    color=color,
-                    shape=Sphere(radius=self.agent_radius),
-                    render_action=True,
-                    obs_range=5.0,
-                    sensors=(
-                        [
-                            Lidar(
-                                world,
-                                n_rays=self.n_lidar_rays,
-                                max_range=self.lidar_range,
-                                entity_filter=entity_filter_agents,
-                            ),
-                            AgentsPoses(
-                                world,
-                                entity_filter=entity_filter_agents,
-                                neighbors=3,
-                            ),
-                        ]
-                        if self.collisions
-                        else None
-                    ),
-                    dynamics=DiffDrive(world, integration="rk4"),
-                )
-            else:
-                agent = Agent(
-                    name=f"agent_{i}",
-                    collide=self.collisions,
-                    color=color,
-                    shape=Sphere(radius=self.agent_radius),
-                    render_action=True,
-                    sensors=(
-                        [
-                            Lidar(
-                                world,
-                                n_rays=self.n_lidar_rays,
-                                max_range=self.lidar_range,
-                                entity_filter=entity_filter_agents,
-                            ),
-                        ]
-                        if self.collisions
-                        else None
-                    ),
-                    dynamics=Holonomic(),
-                    action_script=self.human_simulation.run,
-                )
+            agent = Agent(
+                name=f"agent_{i}",
+                collide=self.collisions,
+                color=color,
+                shape=Sphere(radius=self.agent_radius),
+                render_action=True,
+                obs_range=5.0,
+                sensors=(
+                    [
+                        Lidar(
+                            world,
+                            n_rays=self.n_lidar_rays,
+                            max_range=self.lidar_range,
+                            entity_filter=entity_filter_agents,
+                        ),
+                        AgentsPoses(
+                            world,
+                            entity_filter=entity_filter_agents,
+                            neighbors=3,
+                        ),
+                    ]
+                    if self.collisions
+                    else None
+                ),
+                dynamics=DiffDrive(world, integration="rk4"),
+            )
+
             agent.pos_rew = torch.zeros(batch_dim, device=device)
             agent.agent_collision_rew = agent.pos_rew.clone()
             world.add_agent(agent)
@@ -185,10 +187,199 @@ class Scenario(BaseScenario):
             world.add_landmark(goal)
             agent.goal = goal
 
+        for i in range(self.n_agents, self.n_agents + self.n_scripted_agents):
+            color = (
+                known_colors[i]
+                if i < len(known_colors)
+                else colors[i - len(known_colors)]
+            )
+            agent = Agent(
+                name=f"agent_{i}",
+                collide=self.collisions,
+                color=color,
+                shape=Sphere(radius=self.agent_radius),
+                render_action=True,
+                sensors=(
+                    [
+                        Lidar(
+                            world,
+                            n_rays=self.n_lidar_rays,
+                            max_range=self.lidar_range,
+                            entity_filter=entity_filter_agents,
+                        ),
+                    ]
+                    if self.collisions
+                    else None
+                ),
+                dynamics=Holonomic(),
+                action_script=self.human_simulation.run,
+            )
+            agent.pos_rew = torch.zeros(batch_dim, device=device)
+            agent.agent_collision_rew = agent.pos_rew.clone()
+            world.add_agent(agent)
+
+            # Add goals
+            goal = Landmark(
+                name=f"goal {i}",
+                collide=False,
+                color=color,
+            )
+            world.add_landmark(goal)
+            agent.goal = goal
+
+        # Add obstacles
+        self.create_passage_map(world)
+
         self.pos_rew = torch.zeros(batch_dim, device=device)
         self.final_rew = self.pos_rew.clone()
-        self.human_simulation.reset(world)
         return world
+
+    def create_passage_map(self, world: World):
+        # Add landmarks
+        self.passages = []
+        self.collide_passages = []
+        self.non_collide_passages = []
+
+        def is_passage(i):
+            return i < self.n_passages
+
+        for i in range(self.n_boxes):
+            passage = Landmark(
+                name=f"obstacle {i}",
+                collide=not is_passage(i),
+                movable=False,
+                shape=Box(length=self.passage_length, width=self.passage_width),
+                color=Color.RED,
+                collision_filter=lambda e: not isinstance(e.shape, Box),
+            )
+            if not passage.collide:
+                self.non_collide_passages.append(passage)
+            else:
+                self.collide_passages.append(passage)
+            self.passages.append(passage)
+            world.add_landmark(passage)
+
+    def set_n_passages(self, val):
+        if val == 4:
+            self.middle_angle_180 = True
+        elif val == 3:
+            self.middle_angle_180 = False
+        else:
+            raise AssertionError()
+        self.n_passages = val
+        del self.world._landmarks[-self.n_boxes :]
+        self.create_passage_map(self.world)
+        self.reset_world_at()
+
+    def spawn_passage_map(self, env_index):
+        if self.fixed_passage:
+            big_passage_start_index = torch.full(
+                (self.world.batch_dim,) if env_index is None else (1,),
+                5,
+                device=self.world.device,
+            )
+            small_left_or_right = torch.full(
+                (self.world.batch_dim,) if env_index is None else (1,),
+                1,
+                device=self.world.device,
+            )
+        else:
+            big_passage_start_index = torch.randint(
+                0,
+                self.n_boxes - 1,
+                (self.world.batch_dim,) if env_index is None else (1,),
+                device=self.world.device,
+            )
+            small_left_or_right = torch.randint(
+                0,
+                2,
+                (self.world.batch_dim,) if env_index is None else (1,),
+                device=self.world.device,
+            )
+
+        small_left_or_right[
+            big_passage_start_index > self.n_boxes - 1 - (self.n_passages + 1)
+        ] = 0
+        small_left_or_right[big_passage_start_index < self.n_passages] = 1
+        small_left_or_right[small_left_or_right == 0] -= 3
+        small_left_or_right[small_left_or_right == 1] += 3
+
+        def is_passage(i):
+            is_pass = big_passage_start_index == i
+            is_pass += big_passage_start_index == i - 1
+            is_pass += big_passage_start_index + small_left_or_right == i
+            if self.n_passages == 4:
+                is_pass += (
+                    big_passage_start_index + small_left_or_right
+                    == i - torch.sign(small_left_or_right)
+                )
+            return is_pass
+
+        def get_pos(i):
+            pos = torch.tensor(
+                [
+                    -1 - self.agent_radius + self.passage_length / 2,
+                    0.0,
+                ],
+                dtype=torch.float32,
+                device=self.world.device,
+            ).repeat(i.shape[0], 1)
+            pos[:, X] += self.passage_length * i
+            return pos
+
+        for index, i in enumerate(
+            [
+                big_passage_start_index,
+                big_passage_start_index + 1,
+                big_passage_start_index + small_left_or_right,
+            ]
+            + (
+                [
+                    big_passage_start_index
+                    + small_left_or_right
+                    + torch.sign(small_left_or_right)
+                ]
+                if self.n_passages == 4
+                else []
+            )
+        ):
+            self.non_collide_passages[index].is_rendering[:] = False
+            self.non_collide_passages[index].set_pos(get_pos(i), batch_index=env_index)
+
+        big_passage_pos = (
+            get_pos(big_passage_start_index) + get_pos(big_passage_start_index + 1)
+        ) / 2
+        small_passage_pos = get_pos(big_passage_start_index + small_left_or_right)
+        pass_center = (big_passage_pos + small_passage_pos) / 2
+
+        if env_index is None:
+            self.small_left_or_right = small_left_or_right
+            self.pass_center = pass_center
+            self.big_passage_pos = big_passage_pos
+            self.small_passage_pos = small_passage_pos
+            self.middle_angle[small_left_or_right > 0] = torch.pi
+            self.middle_angle[small_left_or_right < 0] = 0
+        else:
+            self.pass_center[env_index] = pass_center
+            self.small_left_or_right[env_index] = small_left_or_right
+            self.big_passage_pos[env_index] = big_passage_pos
+            self.small_passage_pos[env_index] = small_passage_pos
+            self.middle_angle[env_index] = (
+                0 if small_left_or_right.item() < 0 else torch.pi
+            )
+
+        i = torch.zeros(
+            (self.world.batch_dim,) if env_index is None else (1,),
+            dtype=torch.int,
+            device=self.world.device,
+        )
+        for passage in self.collide_passages:
+            is_pass = is_passage(i)
+            while is_pass.any():
+                i[is_pass] += 1
+                is_pass = is_passage(i)
+            passage.set_pos(get_pos(i), batch_index=env_index)
+            i += 1
 
     def reset_world_at(self, env_index: int = None):
         ScenarioUtils.spawn_entities_randomly(
@@ -242,6 +433,8 @@ class Scenario(BaseScenario):
                     )
                     * self.pos_shaping_factor
                 )
+        self.spawn_passage_map(env_index)
+        self.human_simulation.reset(self.world)
 
     def reward(self, agent: Agent):
         is_first = agent == self.world.agents[0]
@@ -311,7 +504,7 @@ class Scenario(BaseScenario):
         )
 
     def pre_step(self):
-        self.human_simulation.simulate_orca(self.world)
+        self.human_simulation.simulate_policy(self.world)
         super().pre_step()
 
     def done(self):
@@ -471,5 +664,6 @@ class HeuristicPolicy(BaseHeuristicPolicy):
 if __name__ == "__main__":
     render_interactively(
         __file__,
-        control_two_agents=True,
+        control_two_agents=False,
+        enforce_bounds=False,
     )

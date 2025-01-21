@@ -125,5 +125,5 @@ if __name__ == "__main__":
         random_action=False,
         continuous_actions=True,
         # Environment specific
-        n_agents=4,
+        n_agents=1,
     )
