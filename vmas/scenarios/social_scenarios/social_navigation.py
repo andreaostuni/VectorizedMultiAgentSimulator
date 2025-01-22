@@ -17,10 +17,7 @@ from vmas.simulator.utils import Color, ScenarioUtils, X, Y
 from vmas.simulator.dynamics.diff_drive import DiffDrive
 from vmas.simulator.dynamics.holonomic import Holonomic
 
-# from vmas.simulator.human_dynamics.human_simulation import HumanSimulation
 from vmas.simulator.human_dynamics.human_simulation_sfm import HumanSimulation
-
-# from vmas.simulator.human_dynamics.roadmap import find_vertices
 
 if typing.TYPE_CHECKING:
     from vmas.simulator.rendering import Geom
@@ -54,7 +51,8 @@ class Scenario(BaseScenario):
         self.comms_range = kwargs.pop("comms_range", 0)
         self.n_lidar_rays = kwargs.pop("n_lidar_rays", 36)
 
-        self.n_passages = kwargs.pop("n_passages", 5)
+        self.n_box_obstacles = kwargs.pop("n_box_obstacles", 3)
+        self.n_sphere_obstacles = kwargs.pop("n_sphere_obstacles", 2)
         self.middle_angle_180 = kwargs.pop("middle_angle_180", False)
 
         self.shared_rew = kwargs.pop("shared_rew", True)
@@ -68,8 +66,8 @@ class Scenario(BaseScenario):
         self.min_collision_distance = 0.005
 
         if self.enforce_bounds:
-            self.x_semidim = self.world_spawning_x
-            self.y_semidim = self.world_spawning_y
+            self.x_semidim = self.world_spawning_x + self.min_distance_between_entities
+            self.y_semidim = self.world_spawning_y + self.min_distance_between_entities
         else:
             self.x_semidim = None
             self.y_semidim = None
@@ -230,8 +228,8 @@ class Scenario(BaseScenario):
             agent.goal = goal
 
         # Add obstacles
-        # self.create_passage_map(world)
         self.create_boundaries(world)
+        self.create_random_obstacles(world)
 
         self.pos_rew = torch.zeros(batch_dim, device=device)
         self.final_rew = self.pos_rew.clone()
@@ -299,178 +297,86 @@ class Scenario(BaseScenario):
                     batch_index=env_index,
                 )
 
-    def create_passage_map(self, world: World):
+    def create_random_obstacles(self, world: World):
         """
-        Create a passage map with n_passages passages
+        Create random obstacles in the environment
 
         Args:
             world: World object
         """
 
         # Add landmarks
-        self.passages = []
-        self.collide_passages = []
-        self.non_collide_passages = []
+        self.box_obstacles = []
+        self.sphere_obstacles = []
 
-        def is_passage(i):
-            return i < self.n_passages
-
-        for i in range(self.n_boxes):
-            passage = Landmark(
+        for i in range(self.n_box_obstacles):
+            obstacle = Landmark(
                 name=f"obstacle {i}",
-                collide=not is_passage(i),
+                collide=True,
                 movable=False,
-                shape=Box(length=self.passage_length, width=self.passage_width),
+                shape=Box(
+                    length=self.agent_radius * 2,
+                    width=self.agent_radius * 2,
+                ),
                 color=Color.RED,
-                collision_filter=lambda e: not isinstance(e.shape, Box),
             )
-            if not passage.collide:
-                self.non_collide_passages.append(passage)
-            else:
-                self.collide_passages.append(passage)
-            self.passages.append(passage)
-            world.add_landmark(passage)
+            self.box_obstacles.append(obstacle)
+            world.add_landmark(obstacle)
 
-    def set_n_passages(self, val):
-        if val == 4:
-            self.middle_angle_180 = True
-        elif val == 3:
-            self.middle_angle_180 = False
-        else:
-            raise AssertionError()
-        self.n_passages = val
-        del self.world._landmarks[-self.n_boxes :]
-        self.create_passage_map(self.world)
-        self.reset_world_at()
+        for i in range(self.n_sphere_obstacles):
+            obstacle = Landmark(
+                name=f"obstacle {i + self.n_box_obstacles}",
+                collide=True,
+                movable=False,
+                shape=Sphere(radius=self.agent_radius),
+                color=Color.RED,
+            )
+            self.sphere_obstacles.append(obstacle)
+            world.add_landmark(obstacle)
 
-    def spawn_passage_map(self, env_index):
-        if self.fixed_passage:
-            big_passage_start_index = torch.full(
-                (self.world.batch_dim,) if env_index is None else (1,),
-                5,
-                device=self.world.device,
-            )
-            small_left_or_right = torch.full(
-                (self.world.batch_dim,) if env_index is None else (1,),
-                1,
-                device=self.world.device,
-            )
-        else:
-            big_passage_start_index = torch.randint(
-                0,
-                self.n_boxes - 1,
-                (self.world.batch_dim,) if env_index is None else (1,),
-                device=self.world.device,
-            )
-            small_left_or_right = torch.randint(
-                0,
-                2,
-                (self.world.batch_dim,) if env_index is None else (1,),
-                device=self.world.device,
-            )
+    def spawn_random_obstacles(self, env_index: int, occupied_positions: Tensor):
+        """
+        Spawn random obstacles in the environment
 
-        small_left_or_right[
-            big_passage_start_index > self.n_boxes - 1 - (self.n_passages + 1)
-        ] = 0
-        small_left_or_right[big_passage_start_index < self.n_passages] = 1
-        small_left_or_right[small_left_or_right == 0] -= 3
-        small_left_or_right[small_left_or_right == 1] += 3
+        Args:
+            env_index: Environment index
+            occupied_positions: Occupied positions in the environment
+        """
 
-        def is_passage(i):
-            is_pass = big_passage_start_index == i
-            is_pass += big_passage_start_index == i - 1
-            is_pass += big_passage_start_index + small_left_or_right == i
-            if self.n_passages == 4:
-                is_pass += (
-                    big_passage_start_index + small_left_or_right
-                    == i - torch.sign(small_left_or_right)
+        for i, obstacle in enumerate(self.box_obstacles + self.sphere_obstacles):
+            position = ScenarioUtils.find_random_pos_for_entity(
+                occupied_positions=occupied_positions,
+                env_index=env_index,
+                world=self.world,
+                min_dist_between_entities=self.min_distance_between_entities * 2,
+                x_bounds=(-self.world_spawning_x, self.world_spawning_x),
+                y_bounds=(-self.world_spawning_y, self.world_spawning_y),
+            )
+            obstacle.set_pos(position.squeeze(1), batch_index=env_index)
+            if isinstance(obstacle.shape, Box):
+                obstacle.set_rot(
+                    torch.tensor(
+                        [torch.rand(1).item() * 2 * torch.pi],
+                        dtype=torch.float32,
+                        device=self.world.device,
+                    ).repeat(self.world.batch_dim, 1),
+                    batch_index=env_index,
                 )
-            return is_pass
-
-        def get_pos(i):
-            """Get the position of the passage at index i"""
-            pos = torch.tensor(
-                [
-                    -1 - self.agent_radius + self.passage_length / 2,
-                    0.0,
-                ],
-                dtype=torch.float32,
-                device=self.world.device,
-            ).repeat(
-                i.shape[0], 1
-            )  # (batch_dim, 2)
-            pos[:, X] += self.passage_length * i  # (batch_dim, 2)
-            return pos
-
-        for index, i in enumerate(
-            [
-                big_passage_start_index,
-                big_passage_start_index + 1,
-                big_passage_start_index + small_left_or_right,
-            ]
-            + (
-                [
-                    big_passage_start_index
-                    + small_left_or_right
-                    + torch.sign(small_left_or_right)
-                ]
-                if self.n_passages == 4
-                else []
-            )
-        ):
-            self.non_collide_passages[index].is_rendering[:] = False
-            self.non_collide_passages[index].set_pos(get_pos(i), batch_index=env_index)
-
-        big_passage_pos = (
-            get_pos(big_passage_start_index) + get_pos(big_passage_start_index + 1)
-        ) / 2
-        small_passage_pos = get_pos(big_passage_start_index + small_left_or_right)
-        pass_center = (big_passage_pos + small_passage_pos) / 2
-
-        if env_index is None:
-            self.small_left_or_right = small_left_or_right
-            self.pass_center = pass_center
-            self.big_passage_pos = big_passage_pos
-            self.small_passage_pos = small_passage_pos
-            self.middle_angle[small_left_or_right > 0] = torch.pi
-            self.middle_angle[small_left_or_right < 0] = 0
-        else:
-            self.pass_center[env_index] = pass_center
-            self.small_left_or_right[env_index] = small_left_or_right
-            self.big_passage_pos[env_index] = big_passage_pos
-            self.small_passage_pos[env_index] = small_passage_pos
-            self.middle_angle[env_index] = (
-                0 if small_left_or_right.item() < 0 else torch.pi
-            )
-
-        i = torch.zeros(
-            (self.world.batch_dim,) if env_index is None else (1,),
-            dtype=torch.int,
-            device=self.world.device,
-        )  # (batch_dim, 1)
-        for passage in self.collide_passages:
-            is_pass = is_passage(i)
-            while is_pass.any():
-                i[is_pass] += 1
-                is_pass = is_passage(i)
-            passage.set_pos(get_pos(i), batch_index=env_index)
-            i += 1
+            occupied_positions = torch.cat([occupied_positions, position], dim=1)
 
     def reset_world_at(self, env_index: int = None):
-        new_bownd_x = self.world_spawning_x - self.min_distance_between_entities
-        new_bownd_y = self.world_spawning_y - self.min_distance_between_entities
         ScenarioUtils.spawn_entities_randomly(
             self.world.agents,
             self.world,
             env_index,
             self.min_distance_between_entities,
             (
-                -new_bownd_x,
-                new_bownd_x,
+                -self.world_spawning_x,
+                self.world_spawning_x,
             ),
             (
-                -new_bownd_y,
-                new_bownd_y,
+                -self.world_spawning_y,
+                self.world_spawning_y,
             ),
         )
 
@@ -493,8 +399,8 @@ class Scenario(BaseScenario):
                 env_index=env_index,
                 world=self.world,
                 min_dist_between_entities=self.min_distance_between_entities,
-                x_bounds=(-new_bownd_x, new_bownd_x),
-                y_bounds=(-new_bownd_y, new_bownd_y),
+                x_bounds=(-self.world_spawning_x, self.world_spawning_x),
+                y_bounds=(-self.world_spawning_y, self.world_spawning_y),
             )
             goal_poses.append(position.squeeze(1))
             occupied_positions = torch.cat([occupied_positions, position], dim=1)
@@ -523,7 +429,10 @@ class Scenario(BaseScenario):
                     * self.pos_shaping_factor
                 )
         # self.spawn_passage_map(env_index)
-        self.spawn_boundaries(env_index)
+        if self.enforce_bounds:
+            self.spawn_boundaries(env_index)
+
+        self.spawn_random_obstacles(env_index, occupied_positions)
         self.human_simulation.reset(self.world)
 
     def reward(self, agent: Agent):

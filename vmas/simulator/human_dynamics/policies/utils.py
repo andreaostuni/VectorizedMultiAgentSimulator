@@ -160,25 +160,27 @@ def distance_agents_to_spheres(
     # Calculate the distance between the agent and the sphere
     distance = (
         torch.norm(
-            agents[:, :, :2].unsqueeze(2) - spheres[:, :2].unsqueeze(1),
+            agents[:, :, :2].unsqueeze(2) - spheres[:, :, :2].unsqueeze(1),
             dim=-1,
         )
-        - spheres[:, 2].unsqueeze(1)
+        - spheres[:, :, 2].unsqueeze(1)
         - agents[:, :, 4].unsqueeze(2)
     )  # (n_envs, n_agents, n_spheres)
 
     # Calculate the closest point to the sphere
-    closest_point_to_sphere = spheres[:, :2].unsqueeze(1) + (
-        agents[:, :, :2].unsqueeze(2) - spheres[:, :2].unsqueeze(1)
+    closest_point_to_sphere = spheres[:, :, :2].unsqueeze(1) + (
+        agents[:, :, :2].unsqueeze(2) - spheres[:, :, :2].unsqueeze(1)
     ) / torch.norm(
-        agents[:, :, :2].unsqueeze(2) - spheres[:, :2].unsqueeze(1),
+        agents[:, :, :2].unsqueeze(2) - spheres[:, :, :2].unsqueeze(1),
         dim=-1,
         keepdim=True,
     ) * spheres[
-        :, 2
+        :, :, 2
     ].unsqueeze(
         1
-    )
+    ).unsqueeze(
+        -1
+    )  # (n_envs, n_agents, n_spheres, 2)
 
     # Return the distance
     if env_index is not None:
@@ -357,9 +359,15 @@ def sphere_to_tensor(state: EntityState, sphere: Sphere) -> torch.Tensor:
         sphere (Sphere): The sphere to convert
 
     """
-    return torch.tensor(
-        [state.pos[0], state.pos[1], sphere.radius], device=state.pos.device
-    )
+    return torch.cat(
+        [
+            state.pos,
+            torch.tensor([sphere.radius], device=state.pos.device).repeat(
+                state.pos.shape[0], 1
+            ),
+        ],
+        dim=-1,
+    )  # (n_envs, 3)
 
 
 def line_to_tensor(state: EntityState, line: Line) -> torch.Tensor:
