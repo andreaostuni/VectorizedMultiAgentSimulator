@@ -8,7 +8,7 @@ import torch
 from torch import Tensor
 
 from vmas import render_interactively
-from vmas.simulator.core import Agent, Entity, Landmark, Sphere, World, Box
+from vmas.simulator.core import Agent, Entity, Landmark, Sphere, World, Box, Line
 from vmas.simulator.heuristic_policy import BaseHeuristicPolicy
 from vmas.simulator.scenario import BaseScenario
 from vmas.simulator.sensors import Lidar, AgentsPoses
@@ -32,29 +32,29 @@ class Scenario(BaseScenario):
         self.fixed_passage = kwargs.pop("fixed_passage", False)
         self.n_agents = kwargs.pop("n_agents", 1)
 
-        self.n_scripted_agents = kwargs.pop("n_scripted_agents", 1)  # scripted agents
+        self.n_scripted_agents = kwargs.pop("n_scripted_agents", 4)  # scripted agents
         self.collisions = kwargs.pop("collisions", True)
 
         self.world_spawning_x = kwargs.pop(
-            "world_spawning_x", 1
+            "world_spawning_x", 2.5
         )  # X-coordinate limit for entities spawning
         self.world_spawning_y = kwargs.pop(
-            "world_spawning_y", 1
+            "world_spawning_y", 2.5
         )  # Y-coordinate limit for entities spawning
         self.enforce_bounds = kwargs.pop(
-            "enforce_bounds", False
+            "enforce_bounds", True
         )  # If False, the world is unlimited; else, constrained by world_spawning_x and world_spawning_y.
 
         self.agents_with_same_goal = kwargs.pop("agents_with_same_goal", 1)
         self.split_goals = kwargs.pop("split_goals", False)
         self.observe_all_goals = kwargs.pop("observe_all_goals", False)
 
-        self.lidar_range = kwargs.pop("lidar_range", 5.0)
-        self.agent_radius = kwargs.pop("agent_radius", 0.1)
+        self.lidar_range = kwargs.pop("lidar_range", 1.0)
+        self.agent_radius = kwargs.pop("agent_radius", 0.25)
         self.comms_range = kwargs.pop("comms_range", 0)
-        self.n_lidar_rays = kwargs.pop("n_lidar_rays", 12)
+        self.n_lidar_rays = kwargs.pop("n_lidar_rays", 36)
 
-        self.n_passages = kwargs.pop("n_passages", 3)
+        self.n_passages = kwargs.pop("n_passages", 5)
         self.middle_angle_180 = kwargs.pop("middle_angle_180", False)
 
         self.shared_rew = kwargs.pop("shared_rew", True)
@@ -64,7 +64,7 @@ class Scenario(BaseScenario):
         self.agent_collision_penalty = kwargs.pop("agent_collision_penalty", -1)
         ScenarioUtils.check_kwargs_consumed(kwargs)
 
-        self.min_distance_between_entities = self.agent_radius * 2 + 0.05
+        self.min_distance_between_entities = self.agent_radius * 2
         self.min_collision_distance = 0.005
 
         if self.enforce_bounds:
@@ -118,7 +118,9 @@ class Scenario(BaseScenario):
         colors = torch.randn(
             (max(self.n_agents - len(known_colors), 0), 3), device=device
         )
-        entity_filter_agents: Callable[[Entity], bool] = lambda e: isinstance(e, Agent)
+        entity_filter_agents: Callable[[Entity], bool] = lambda e: isinstance(
+            e, Agent
+        ) or (isinstance(e, Landmark) and e.collide)
 
         self.human_simulation = HumanSimulation(
             time_step=world.dt,
@@ -228,13 +230,83 @@ class Scenario(BaseScenario):
             agent.goal = goal
 
         # Add obstacles
-        self.create_passage_map(world)
+        # self.create_passage_map(world)
+        self.create_boundaries(world)
 
         self.pos_rew = torch.zeros(batch_dim, device=device)
         self.final_rew = self.pos_rew.clone()
         return world
 
+    def create_boundaries(self, world: World):
+        """
+        Generate boundaries for the environment
+        putting line obstacles on the edges of the environment
+
+        Args:
+            world: World object
+        """
+
+        # Add landmarks
+
+        self.boundaries = []
+
+        for i in range(4):
+            length = 2 * (self.x_semidim if i % 2 == 0 else self.y_semidim)
+
+            boundary = Landmark(
+                name=f"obstacle boundary {i}",
+                collide=True,
+                movable=False,
+                shape=Line(length=length),
+                color=Color.RED,
+            )
+            world.add_landmark(boundary)
+            self.boundaries.append(boundary)
+
+    def spawn_boundaries(self, env_index):
+        for i, boundary in enumerate(self.boundaries):
+            if i % 2 == 0:
+                boundary.set_pos(
+                    torch.tensor(
+                        [
+                            -self.x_semidim if i == 0 else self.x_semidim,
+                            0.0,
+                        ],
+                        dtype=torch.float32,
+                        device=self.world.device,
+                    ),
+                    batch_index=env_index,
+                )
+                boundary.set_rot(
+                    torch.tensor(
+                        [torch.pi / 2],
+                        dtype=torch.float32,
+                        device=self.world.device,
+                    ).repeat(self.world.batch_dim, 1),
+                    batch_index=env_index,
+                )
+
+            else:
+                boundary.set_pos(
+                    torch.tensor(
+                        [
+                            0.0,
+                            -self.y_semidim if i == 1 else self.y_semidim,
+                        ],
+                        dtype=torch.float32,
+                        device=self.world.device,
+                    ).repeat(self.world.batch_dim, 1),
+                    batch_index=env_index,
+                )
+
     def create_passage_map(self, world: World):
+        """
+        Create a passage map with n_passages passages
+
+        Args:
+            world: World object
+        """
+
         # Add landmarks
         self.passages = []
         self.collide_passages = []
@@ -316,6 +388,7 @@ class Scenario(BaseScenario):
             return is_pass
 
         def get_pos(i):
+            """Get the position of the passage at index i"""
             pos = torch.tensor(
                 [
                     -1 - self.agent_radius + self.passage_length / 2,
@@ -323,8 +396,10 @@ class Scenario(BaseScenario):
                 ],
                 dtype=torch.float32,
                 device=self.world.device,
-            ).repeat(i.shape[0], 1)
-            pos[:, X] += self.passage_length * i
+            ).repeat(
+                i.shape[0], 1
+            )  # (batch_dim, 2)
+            pos[:, X] += self.passage_length * i  # (batch_dim, 2)
             return pos
 
         for index, i in enumerate(
@@ -372,7 +447,7 @@ class Scenario(BaseScenario):
             (self.world.batch_dim,) if env_index is None else (1,),
             dtype=torch.int,
             device=self.world.device,
-        )
+        )  # (batch_dim, 1)
         for passage in self.collide_passages:
             is_pass = is_passage(i)
             while is_pass.any():
@@ -382,17 +457,31 @@ class Scenario(BaseScenario):
             i += 1
 
     def reset_world_at(self, env_index: int = None):
+        new_bownd_x = self.world_spawning_x - self.min_distance_between_entities
+        new_bownd_y = self.world_spawning_y - self.min_distance_between_entities
         ScenarioUtils.spawn_entities_randomly(
             self.world.agents,
             self.world,
             env_index,
             self.min_distance_between_entities,
-            (-self.world_spawning_x, self.world_spawning_x),
-            (-self.world_spawning_y, self.world_spawning_y),
+            (
+                -new_bownd_x,
+                new_bownd_x,
+            ),
+            (
+                -new_bownd_y,
+                new_bownd_y,
+            ),
         )
 
         occupied_positions = torch.stack(
-            [agent.state.pos for agent in self.world.agents], dim=1
+            [agent.state.pos for agent in self.world.agents]
+            + [
+                landmark.state.pos
+                for landmark in self.world.landmarks
+                if landmark.collide
+            ],
+            dim=1,
         )
         if env_index is not None:
             occupied_positions = occupied_positions[env_index].unsqueeze(0)
@@ -404,8 +493,8 @@ class Scenario(BaseScenario):
                 env_index=env_index,
                 world=self.world,
                 min_dist_between_entities=self.min_distance_between_entities,
-                x_bounds=(-self.world_spawning_x, self.world_spawning_x),
-                y_bounds=(-self.world_spawning_y, self.world_spawning_y),
+                x_bounds=(-new_bownd_x, new_bownd_x),
+                y_bounds=(-new_bownd_y, new_bownd_y),
             )
             goal_poses.append(position.squeeze(1))
             occupied_positions = torch.cat([occupied_positions, position], dim=1)
@@ -433,7 +522,8 @@ class Scenario(BaseScenario):
                     )
                     * self.pos_shaping_factor
                 )
-        self.spawn_passage_map(env_index)
+        # self.spawn_passage_map(env_index)
+        self.spawn_boundaries(env_index)
         self.human_simulation.reset(self.world)
 
     def reward(self, agent: Agent):
@@ -494,11 +584,7 @@ class Scenario(BaseScenario):
                 agent.state.vel,
             ]
             + goal_poses
-            + (
-                [agent.sensors[0]._max_range - agent.sensors[0].measure()]
-                if self.collisions
-                else []
-            )
+            + ([agent.sensors[0].measure()] if self.collisions else [])
             + ([agent.sensors[1].measure()] if len(agent.sensors) > 1 else []),
             dim=-1,
         )
@@ -665,5 +751,5 @@ if __name__ == "__main__":
     render_interactively(
         __file__,
         control_two_agents=False,
-        enforce_bounds=False,
+        enforce_bounds=True,
     )

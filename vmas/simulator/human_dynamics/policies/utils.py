@@ -72,7 +72,7 @@ def distance_agents_to_lines(
 
           The agent's position (x, y, vx, vy, radius)
         lines (torch.Tensor): The lines are represented by their vertices
-          lines.shape = (n_lines, 2, 2)
+          lines.shape = (envs, n_lines, 2, 2)
         env_index (int, optional): The index of the environment. Defaults to None.
 
     Returns:
@@ -83,32 +83,30 @@ def distance_agents_to_lines(
     """
 
     # Line starts and ends
-    lines_start = lines[:, 0, :]  # Shape (n_lines, dim)
-    lines_end = lines[:, 1, :]  # Shape (n_lines, dim)
+    lines_start = lines[:, :, 0, :]  # Shape (n_envs, n_lines, dim)
+    lines_end = lines[:, :, 1, :]  # Shape (n_envs, n_lines, dim)
 
     # Compute line vectors
-    line_vectors = lines_end - lines_start  # Shape (n_lines, dim)
+    line_vectors = lines_end - lines_start  # Shape (n_envs, n_lines, dim)
 
     # Expand tensors for batched computation
 
     # take only the x and y coordinates of the agents
     points_exp = agents[:, :, :2].unsqueeze(2)  # Shape (n_envs, n_points, 1, 2)
-    lines_start_exp = lines_start.unsqueeze(0).unsqueeze(
-        0
-    )  # Shape (1, 1, n_lines, dim)
-    line_vectors_exp = line_vectors.unsqueeze(0).unsqueeze(
-        0
-    )  # Shape (1, 1, n_lines, dim)
+    lines_start_exp = lines_start.unsqueeze(1)  # Shape (n_envs, 1, n_lines, dim)
+    line_vectors_exp = line_vectors.unsqueeze(1)  # Shape (n_envs, 1, n_lines, dim)
 
     # Compute vectors from line starts to points
     w = points_exp - lines_start_exp  # Shape (n_envs, n_points, n_lines, dim)
 
     # Compute the projection scalar t for each point-line pair
-    line_lengths_squared = torch.sum(
-        line_vectors**2, dim=-1, keepdim=True
-    )  # Shape (n_lines, 1)
-    t = (
-        torch.sum(w * line_vectors_exp, dim=-1, keepdim=True) / line_lengths_squared.T
+    line_lengths_squared = (
+        torch.linalg.norm(line_vectors, dim=-1, keepdim=True) ** 2
+    )  # Shape (n_envs, n_lines, 1)
+    t = torch.sum(
+        w * line_vectors_exp, dim=-1, keepdim=True
+    ) / line_lengths_squared.unsqueeze(
+        1
     )  # Shape (n_envs, n_points, n_lines, 1)
 
     # Clamp t to the range [0, 1]
@@ -131,7 +129,10 @@ def distance_agents_to_lines(
             distances[env_index, :, :],
         )  # Shape (n_agents, n_lines, 2), (n_agents, n_lines)
     # Return the closest points and distances
-    return closest_points, distances
+    return (
+        closest_points,
+        distances,
+    )  # Shape (n_envs, n_agents, n_lines, 2), (n_envs, n_agents, n_lines)
 
 
 def distance_agents_to_spheres(
@@ -145,7 +146,7 @@ def distance_agents_to_spheres(
             agents.shape = (envs, n_agents, n_features)
             (x, y, vx, vy, radius, goal_x, goal_y, group_id)
         spheres (torch.Tensor): The spheres' positions and radii
-            spheres.shape = (n_spheres, 3)
+            spheres.shape = (envs, n_spheres, 3)
             (x, y, radius)
         env_index (int, optional): The index of the environment. Defaults to None.
 
@@ -159,32 +160,33 @@ def distance_agents_to_spheres(
     # Calculate the distance between the agent and the sphere
     distance = (
         torch.norm(
-            agents[:, :, :2].unsqueeze(2) - spheres[:, :2].unsqueeze(0).unsqueeze(0),
+            agents[:, :, :2].unsqueeze(2) - spheres[:, :2].unsqueeze(1),
             dim=-1,
         )
-        - spheres[:, 2].unsqueeze(0).unsqueeze(0)
+        - spheres[:, 2].unsqueeze(1)
         - agents[:, :, 4].unsqueeze(2)
     )  # (n_envs, n_agents, n_spheres)
 
     # Calculate the closest point to the sphere
-    closest_point_to_sphere = spheres[:, :2].unsqueeze(0).unsqueeze(0) + (
-        agents[:, :, :2].unsqueeze(2) - spheres[:, :2].unsqueeze(0).unsqueeze(0)
+    closest_point_to_sphere = spheres[:, :2].unsqueeze(1) + (
+        agents[:, :, :2].unsqueeze(2) - spheres[:, :2].unsqueeze(1)
     ) / torch.norm(
-        agents[:, :, :2].unsqueeze(2) - spheres[:, :2].unsqueeze(0).unsqueeze(0),
+        agents[:, :, :2].unsqueeze(2) - spheres[:, :2].unsqueeze(1),
         dim=-1,
         keepdim=True,
     ) * spheres[
         :, 2
     ].unsqueeze(
-        0
-    ).unsqueeze(
-        0
+        1
     )
 
     # Return the distance
     if env_index is not None:
         return closest_point_to_sphere[env_index, :, :, :], distance[env_index, :, :]
-    return closest_point_to_sphere, distance
+    return (
+        closest_point_to_sphere,
+        distance,
+    )  # (n_envs, n_agents, n_spheres, 2), (n_envs, n_agents, n_spheres)
 
 
 def distance_agents_to_boxes(
@@ -369,15 +371,14 @@ def line_to_tensor(state: EntityState, line: Line) -> torch.Tensor:
         line (Line): The line to convert
 
     """
-    half_length = line.length / 2
+    half_length = line.length / 2  # scalar
     start = (
-        state.pos
-        + torch.tensor([state.rot.cos(), state.rot.sin()], device=state.pos.device)
-        * half_length
-    )
+        state.pos  # (n_envs, 2)
+        + torch.cat([state.rot.cos(), state.rot.sin()], dim=-1) * half_length
+    )  # (n_envs, 2)
     end = (
-        state.pos
-        - torch.tensor([state.rot.cos(), state.rot.sin()], device=state.pos.device)
-        * half_length
-    )
-    return torch.stack([start, end]).to(state.pos.device)
+        state.pos - torch.cat([state.rot.cos(), state.rot.sin()], dim=-1) * half_length
+    )  # (n_envs, 2)
+    return (
+        torch.stack([start, end]).permute(1, 0, 2).to(state.pos.device)
+    )  # (n_envs, 2, 2)

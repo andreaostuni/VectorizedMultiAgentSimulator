@@ -93,7 +93,7 @@ class SocialForcePolicy(torch.nn.Module):
         force_factor_group_coherence: float = 2.0,
         force_factor_group_repulsion: float = 1.0,
         obstacle_max_dist: float = 2.0,
-        agent_max_dist: float = 1.5,
+        agent_max_dist: float = 3.0,
         lambda_: float = 2.0,
         gamma: float = 0.35,
         n: float = 2.0,
@@ -182,7 +182,6 @@ class SocialForcePolicy(torch.nn.Module):
           (x, y, vx, vy, radius, goal_x, goal_y, group_id)
         """
         forces = self.compute_forces(agents, box_obstacles, sphere_obstacles, lines)
-        # agents = self.update_position(agents, forces, self.time_step)
         self.update_position(agents, forces, self.time_step)
         return agents
 
