@@ -106,7 +106,6 @@ class HumanSimulation:
             self.line_obstacles_tensor = torch.stack(line_obstacles, dim=1).to(
                 self.device
             )  # (batch_dim, n_obstacles, 2, 2)
-        print("Simulation reset")
 
     def simulate_policy(self, world: World):
         """

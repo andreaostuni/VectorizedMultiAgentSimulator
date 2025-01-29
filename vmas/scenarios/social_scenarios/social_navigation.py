@@ -22,6 +22,8 @@ from vmas.simulator.human_dynamics.human_simulation_sfm import HumanSimulation
 if typing.TYPE_CHECKING:
     from vmas.simulator.rendering import Geom
 
+from typing import Optional
+
 
 class Scenario(BaseScenario):
     def make_world(self, batch_dim: int, device: torch.device, **kwargs):
@@ -261,7 +263,8 @@ class Scenario(BaseScenario):
             world.add_landmark(boundary)
             self.boundaries.append(boundary)
 
-    def spawn_boundaries(self, env_index):
+    def spawn_boundaries(self, env_index: Optional[int] = None):
+
         for i, boundary in enumerate(self.boundaries):
             if i % 2 == 0:
                 boundary.set_pos(
@@ -280,7 +283,7 @@ class Scenario(BaseScenario):
                         [torch.pi / 2],
                         dtype=torch.float32,
                         device=self.world.device,
-                    ).repeat(self.world.batch_dim, 1),
+                    ),
                     batch_index=env_index,
                 )
 
@@ -293,7 +296,7 @@ class Scenario(BaseScenario):
                         ],
                         dtype=torch.float32,
                         device=self.world.device,
-                    ).repeat(self.world.batch_dim, 1),
+                    ),
                     batch_index=env_index,
                 )
 
@@ -359,7 +362,7 @@ class Scenario(BaseScenario):
                         [torch.rand(1).item() * 2 * torch.pi],
                         dtype=torch.float32,
                         device=self.world.device,
-                    ).repeat(self.world.batch_dim, 1),
+                    ),
                     batch_index=env_index,
                 )
             occupied_positions = torch.cat([occupied_positions, position], dim=1)
@@ -503,17 +506,28 @@ class Scenario(BaseScenario):
         super().pre_step()
 
     def done(self):
-        return torch.stack(
-            [
-                torch.linalg.vector_norm(
-                    agent.state.pos - agent.goal.state.pos,
-                    dim=-1,
-                )
-                < agent.shape.radius
-                for agent in self.world.agents
-            ],
-            dim=-1,
-        ).all(-1)
+        """
+        This environment is done when all agents reach their goals
+        in a batched environment we check if all agents in their respective environments have reached their goals
+        """
+        # add collision check
+        is_done = torch.zeros(
+            self.world.batch_dim, device=self.world.device, dtype=torch.bool
+        )
+        is_collision_with_obstacle = torch.zeros(
+            self.world.batch_dim, device=self.world.device, dtype=torch.bool
+        )
+
+        is_collision_with_agents = torch.zeros(
+            self.world.batch_dim, device=self.world.device, dtype=torch.bool
+        )
+
+        is_done = (
+            is_collision_with_agents
+            | is_collision_with_obstacle
+            | self.all_goal_reached
+        )
+        return is_done
 
     def info(self, agent: Agent) -> Dict[str, Tensor]:
         return {

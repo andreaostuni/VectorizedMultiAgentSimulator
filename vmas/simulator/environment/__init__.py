@@ -11,6 +11,10 @@ class Wrapper(Enum):
     GYM = 1
     GYMNASIUM = 2
     GYMNASIUM_VEC = 3
+    SKRL_VEC = 4
+    SKRL = 5
+    SKRL_SINGLE_AGENT = 6
+    SKRL_SINGLE_AGENT_VEC = 7
 
     def get_env(self, env: Environment, **kwargs):
         if self is self.RLLIB:
@@ -31,3 +35,23 @@ class Wrapper(Enum):
             )
 
             return GymnasiumVectorizedWrapper(env, **kwargs)
+        elif self is self.SKRL_VEC:
+            from vmas.simulator.environment.skrl.skrl_vec import SKRLVectorizedWrapper
+
+            return SKRLVectorizedWrapper(env, **kwargs)
+        elif self is self.SKRL:
+            from vmas.simulator.environment.skrl.skrl import SKRLWrapper
+
+            return SKRLWrapper(env, **kwargs)
+        elif self is self.SKRL_SINGLE_AGENT:
+            from vmas.simulator.environment.skrl.skrl_single_agent import (
+                SKRLSingleAgentWrapper,
+            )
+
+            return SKRLSingleAgentWrapper(env, **kwargs)
+        elif self is self.SKRL_SINGLE_AGENT_VEC:
+            from vmas.simulator.environment.skrl.skrl_single_agent_vec import (
+                SKRLSingleAgentVectorizedWrapper,
+            )
+
+            return SKRLSingleAgentVectorizedWrapper(env, **kwargs)
