@@ -1,4 +1,4 @@
-#  Copyright (c) 2022-2024.
+#  Copyright (c) 2022-2025.
 #  ProrokLab (https://www.proroklab.org/)
 #  All rights reserved.
 
@@ -19,7 +19,7 @@ __all__ = [
     "social_scenarios",
 ]
 
-__version__ = "1.4.3"
+__version__ = "1.5.0"
 
 scenarios = sorted(
     [
