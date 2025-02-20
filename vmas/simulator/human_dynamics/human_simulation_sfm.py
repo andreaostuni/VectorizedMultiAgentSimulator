@@ -1,4 +1,5 @@
 from vmas.simulator.core import Agent, World, Line, Sphere, Box
+from typing import Optional
 import torch
 from vmas.simulator.human_dynamics.policies.sfm import SocialForcePolicy
 from vmas.simulator.human_dynamics.policies.utils import (
@@ -34,6 +35,10 @@ class HumanSimulation:
         self.robots = []  # robots are agents with policies
         self.humans = []  # humans are agents with scripts
         self.agents_tensor = None
+        self.old_agent_tensor = None
+        self.obstacle_distances = None
+        self.agents_distances = None
+        self.social_work = None
         self.box_obstacles_tensor = None
         self.sphere_obstacles_tensor = None
         self.line_obstacles_tensor = None
@@ -56,7 +61,7 @@ class HumanSimulation:
             safety_space=safety_space,
         )
 
-    def reset(self, world: World):
+    def reset(self, world: World, env_index: Optional[int] = None):
         """
         Reset the simulation.
 
@@ -70,6 +75,10 @@ class HumanSimulation:
         self.agents_tensor = agents_to_tensor(
             self.robots + self.humans
         )  # (batch_dim, n_agents, 8)
+        self.old_agent_tensor = None
+        self.obstacle_distances = None
+        self.agents_distances = None
+        self.social_work = None
 
         box_obstacles = []
         sphere_obstacles = []
@@ -120,7 +129,12 @@ class HumanSimulation:
             self.robots + self.humans
         )  # (batch_dim, n_agents, 8)
 
-        self.agents_tensor = self.policy(
+        (
+            self.agents_tensor,
+            self.social_work,
+            self.agents_distances,
+            self.obstacle_distances,
+        ) = self.policy(
             self.old_agent_tensor,
             self.box_obstacles_tensor,
             self.sphere_obstacles_tensor,

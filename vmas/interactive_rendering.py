@@ -346,7 +346,7 @@ def render_interactively(
             device="cpu",
             continuous_actions=True,
             wrapper="gym",
-            seed=0,
+            # seed=0,
             wrapper_kwargs={"return_numpy": False},
             # Environment specific variables
             **kwargs,
@@ -354,9 +354,9 @@ def render_interactively(
         control_two_agents=control_two_agents,
         display_info=display_info,
         save_render=save_render,
-        render_name=f"{scenario}_interactive"
-        if isinstance(scenario, str)
-        else "interactive",
+        render_name=(
+            f"{scenario}_interactive" if isinstance(scenario, str) else "interactive"
+        ),
     )
 
 
