@@ -1,10 +1,8 @@
-#  Copyright (c) 2022-2024.
-#  ProrokLab (https://www.proroklab.org/)
-#  All rights reserved.
 import random
 import time
 
 import torch
+from torch.profiler import profile, record_function, ProfilerActivity
 
 from vmas import make_env
 from vmas.simulator.core import Agent
@@ -73,36 +71,61 @@ def use_vmas_env(
     init_time = time.time()
     step = 0
 
-    for _ in range(n_steps):
-        step += 1
-        print(f"Step {step}")
+    try:
+        with torch.profiler.profile(
+            activities=[
+                torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA,
+            ],
+            record_shapes=True,
+            on_trace_ready=torch.profiler.tensorboard_trace_handler("./trace"),
+            # schedule=torch.profiler.schedule(
+            #     skip_first=2,
+            #     wait=1,
+            #     warmup=1,
+            #     active=2,
+            #     repeat=1,  # Reduce active profiling steps
+            # ),
+        ) as prof:
+            for _ in range(n_steps):
+                step += 1
+                print(f"Step {step}")
 
-        # VMAS actions can be either a list of tensors (one per agent)
-        # or a dict of tensors (one entry per agent with its name as key)
-        # Both action inputs can be used independently of what type of space its chosen
-        dict_actions = random.choice([True, False])
+                # VMAS actions can be either a list of tensors (one per agent)
+                # or a dict of tensors (one entry per agent with its name as key)
+                # Both action inputs can be used independently of what type of space its chosen
+                dict_actions = random.choice([True, False])
 
-        actions = {} if dict_actions else []
-        for agent in env.agents:
-            if not random_action:
-                action = _get_deterministic_action(agent, continuous_actions, env)
-            else:
-                action = env.get_random_action(agent)
-            if dict_actions:
-                actions.update({agent.name: action})
-            else:
-                actions.append(action)
+                actions = {} if dict_actions else []
+                for agent in env.agents:
+                    if not random_action:
+                        action = _get_deterministic_action(
+                            agent, continuous_actions, env
+                        )
+                    else:
+                        action = env.get_random_action(agent)
+                    if dict_actions:
+                        actions.update({agent.name: action})
+                    else:
+                        actions.append(action)
 
-        obs, rews, dones, info = env.step(actions)
+                obs, rews, dones, info = env.step(actions)
 
-        if render:
-            frame = env.render(
-                mode="rgb_array",
-                agent_index_focus=None,  # Can give the camera an agent index to focus on
-                visualize_when_rgb=visualize_render,
-            )
-            if save_render:
-                frame_list.append(frame)
+                # reset the environment if done at the indexes
+                if any(dones):
+                    for i in torch.arange(num_envs, device=device)[dones]:
+                        obs[i] = env.reset_at(i)
+
+                if render:
+                    frame = env.render(
+                        mode="human",
+                        agent_index_focus=None,  # Can give the camera an agent index to focus on
+                        visualize_when_rgb=visualize_render,
+                    )
+                    if save_render:
+                        frame_list.append(frame)
+    except Exception as e:
+        print(f"Profiler failed: {e}")
 
     total_time = time.time() - init_time
     print(
@@ -113,14 +136,18 @@ def use_vmas_env(
     if render and save_render:
         save_video(scenario_name, frame_list, fps=1 / env.scenario.world.dt)
 
+    # Save the profiler trace to a JSON file
+    prof.export_chrome_trace("trace.json")
+
 
 if __name__ == "__main__":
+
     use_vmas_env(
         scenario_name="social_navigation",
         render=False,
         device="cuda",
-        num_envs=16384,
-        n_steps=100,
+        num_envs=32,
+        n_steps=30,
         save_render=False,
         random_action=False,
         continuous_actions=True,
