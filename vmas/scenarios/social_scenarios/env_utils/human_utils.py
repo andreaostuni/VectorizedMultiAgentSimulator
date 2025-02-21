@@ -123,7 +123,9 @@ def generate_scenario(
     )
 
     if occupied_positions is None:
-        occupied_positions = torch.empty((world.batch_dim, 0, 2), device=world.device)
+        occupied_positions = torch.empty(
+            (world.batch_dim if env_index is None else 1, 0, 2), device=world.device
+        )
 
     occupied_positions = torch.cat(
         [occupied_positions, spawn_positions, goal_positions], dim=1
@@ -304,27 +306,37 @@ def generate_agents_state(
         [
             spawn_positions,
             torch.stack(
-                [agent.state.pos for agent in agents],
+                [
+                    (
+                        agent.state.pos
+                        if env_index is None
+                        else agent.state.pos[env_index : env_index + 1]
+                    )
+                    for agent in agents
+                ],
                 dim=1,
             ),
         ],
         dim=1,
     )
 
-    if env_index is not None:
-        spawn_positions = spawn_positions[env_index].unsqueeze(0)
+    # if env_index is not None:
+    #     spawn_positions = spawn_positions[env_index].unsqueeze(0)
 
     if current_scenario is not None and current_scenario >= Scenario.RANDOM:
         sign = 1 if current_scenario == Scenario.STATIC else -1
         for agent in agents:
-            agent.goal.set_pos(sign * agent.state.pos, batch_index=env_index)
             if env_index is None:
+                agent.goal.set_pos(sign * agent.state.pos, batch_index=env_index)
                 agent.pos_shaping = torch.linalg.norm(
                     agent.goal.state.pos - agent.state.pos, dim=1
                 )
             else:
+                agent.goal.set_pos(
+                    sign * agent.state.pos[env_index], batch_index=env_index
+                )
                 agent.pos_shaping[env_index] = torch.linalg.norm(
-                    agent.goal.pos[env_index] - agent.goal.state.pos[env_index], dim=1
+                    agent.goal.state.pos[env_index] - agent.state.pos[env_index]
                 ).unsqueeze(0)
         goal_positions = torch.cat([goal_positions, sign * spawn_positions], dim=1)
         return spawn_positions, goal_positions
@@ -348,7 +360,7 @@ def generate_agents_state(
             )
         else:
             agent.pos_shaping[env_index] = torch.linalg.norm(
-                agent.goal.pos[env_index] - agent.goal.state.pos[env_index], dim=1
+                agent.goal.state.pos[env_index] - agent.state.pos[env_index]
             ).unsqueeze(0)
 
     return spawn_positions, goal_positions

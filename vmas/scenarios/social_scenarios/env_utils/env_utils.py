@@ -177,7 +177,7 @@ class AgentsStateBuffer:
         self.device = world.device
         self.buffer_size = buffer_size
         self.buffer = None
-        self.index = torch.tensor(0, device=self.device)
+        self.index = torch.zeros(world.batch_dim, device=self.device)
 
     def add_state(self, state: Tensor) -> None:
         """
@@ -186,13 +186,14 @@ class AgentsStateBuffer:
         """
         if self.buffer is None:
             self.buffer = torch.full(
-                (self.batch_dim, self.buffer_size, state.shape[1:]),
+                (state.shape[0], self.buffer_size, *tuple(state.shape[1:])),
                 device=self.device,
                 dtype=state.dtype,
                 fill_value=float("nan"),
             )
-        self.buffer[:, self.index, :] = state
-        self.index = self.index + 1 % self.buffer_size
+        # self.buffer[:, self.index, :] = state
+        self.buffer[torch.arange(state.shape[0]), self.index.long()] = state
+        self.index = (self.index + 1) % self.buffer_size
 
     def get_state_at_step(self, t: int) -> Tensor:
         """
@@ -208,9 +209,13 @@ class AgentsStateBuffer:
         """
         Get the last state in the buffer
         """
-        if torch.isnan(self.buffer[:, self.index - 1, :]).any():
+        if torch.isnan(
+            self.buffer[torch.arange(self.buffer.shape[0]), (self.index - 1).long(), :]
+        ).any():
             raise ValueError("Last state is nan")
-        return self.buffer[:, self.index - 1, :, :]
+        return self.buffer[
+            torch.arange(self.buffer.shape[0]), (self.index - 1).long(), :, :
+        ]
 
     def reset(self, env_index: Optional[int] = None) -> None:
         """
@@ -218,7 +223,7 @@ class AgentsStateBuffer:
         """
         if env_index is None:
             self.buffer = None
-            self.index = torch.tensor(0, device=self.device)
+            self.index = torch.zeros_like(self.index)
         else:
             self.reset_at(env_index)
 

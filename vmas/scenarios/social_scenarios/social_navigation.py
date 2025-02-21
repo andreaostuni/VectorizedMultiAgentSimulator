@@ -45,7 +45,7 @@ class Scenario(BaseScenario):
         )  # If False, the world is unlimited; else, constrained by world_spawning_x and world_spawning_y.
         self.observe_all_goals = kwargs.pop("observe_all_goals", False)
 
-        self.lidar_range = kwargs.pop("lidar_range", 1.0)
+        self.lidar_range = kwargs.pop("lidar_range", 3.0)
         self.agent_radius = kwargs.pop("agent_radius", 0.25)
         self.comms_range = kwargs.pop("comms_range", 0)
         self.n_lidar_rays = kwargs.pop("n_lidar_rays", 36)
@@ -114,7 +114,6 @@ class Scenario(BaseScenario):
             world=world,
             safety_space=0.1,
         )
-
         # Add agents
         for i in range(self.n_agents):
             color = (
@@ -131,6 +130,7 @@ class Scenario(BaseScenario):
                 shape=Sphere(radius=self.agent_radius),
                 render_action=True,
                 obs_range=5.0,
+                max_speed=0.6,
                 sensors=(
                     [
                         Lidar(
@@ -276,8 +276,8 @@ class Scenario(BaseScenario):
             # self.world_spawning_y,
         )
         self.human_simulation.reset(self.world)
-        for agent in self.world.policy_agents:
-            self.agents_state_buffer[agent].reset(env_index=env_index)
+
+        self.agents_state_buffer.reset(env_index=env_index)
 
         if env_index is None:
             self.is_collision_with_agents = torch.zeros(
@@ -315,10 +315,10 @@ class Scenario(BaseScenario):
             A tensor with shape [batch_dim].
         """
         # Initialize
-        self.rew[:] = 0
+        rew = torch.zeros(self.world.batch_dim, device=self.world.device)
 
         # Get the index of the current agent
-        agent_index = self.human_simulation.get_agent_index(agent)
+        agent_index = self.human_simulation.find_agent_index(agent)
         cd = 1.0
 
         # Get the distance to the goal
@@ -342,10 +342,20 @@ class Scenario(BaseScenario):
         # the direction of the agent is the nomalized velocity
         # the direction to the goal is the normalized vector from the agent to the goal
 
-        desired_direction = (agent.goal.state.pos - agent.state.pos) / distance_to_goal
-        agent_direction = agent.state.vel / torch.linalg.norm(agent.state.vel, dim=-1)
-        angle = torch.acos(torch.sum(agent_direction * desired_direction, dim=-1))
-        Rh = 1.0 - 2 * torch.abs(torch.sqrt(angle / torch.pi))
+        desired_direction_angle = torch.atan2(
+            (agent.goal.state.pos - agent.state.pos)[:, 1],
+            (agent.goal.state.pos - agent.state.pos)[:, 0],
+        )
+        # if agent.state.vel is close to zero, the agent is not moving
+
+        agent_yaw = torch.where(
+            (torch.linalg.vector_norm(agent.state.vel, dim=-1) < 10e-5).unsqueeze(-1),
+            torch.atan2(torch.sin(agent.state.rot), torch.cos(agent.state.rot)),
+            torch.atan2(agent.state.vel[:, 1:2], agent.state.vel[:, 0:1]),
+        ).squeeze(-1)
+
+        angle = desired_direction_angle - agent_yaw
+        Rh = 1.0 - 2 * torch.sqrt(torch.abs(angle / torch.pi))
 
         # [penalty] linear velocity
         cv = 0.8
@@ -362,31 +372,30 @@ class Scenario(BaseScenario):
         # TODO get it from the human simulation
         # use the lidar sensor to get the distance to the obstacles
         # get the distance to the closest obstacle
-        Ro = (
-            torch.min(
-                (agent.sensors[0].measure() - agent.sensors[0]._max_range), dim=-1
-            )
-            / agent.sensors[0]._max_range
-        )
+        Ro = (agent.sensors[0].measure() - agent.sensors[0]._max_range).min(dim=-1)[
+            0
+        ] / agent.sensors[0]._max_range
 
         # [penalty] social disturbance
         cp = 2.0
         Rp = -torch.clamp(
-            1 / torch.min(agent.sensors[1].measure()[:, 0], dim=-1), min=0.0, max=2.5
+            1 / (agent.sensors[1].measure()[:, 0]).min(dim=-1)[0], min=0.0, max=2.5
         )
         cs = 2.5
         Rs = self.human_simulation.social_work[:, agent_index]
         Rs = -torch.clamp(Rs, min=0.0, max=2.5)
 
-        self.rew = Rd * cd + Rh * ch + Rv * cv + Ro * co + Rp * cp + Rs * cs
+        rew = Rd * cd + Rh * ch + Rv * cv + Ro * co + Rp * cp + Rs * cs
 
         # [penalty] time penalty
-        self.rew = self.rew - 0.5
+        rew = rew - 0.5
 
         # [reward] goal reached
         # check if the agent is on the goal
-        self.goal_reached = distance_to_goal < agent.goal.shape.radius
-        self.rew = self.rew + self.final_reward * self.goal_reached
+        self.goal_reached = (
+            distance_to_goal - agent.shape.radius
+        ) < agent.goal.shape.radius
+        rew = rew + self.final_reward * self.goal_reached
 
         # [penalty] agent-agent collision
 
@@ -394,6 +403,7 @@ class Scenario(BaseScenario):
             self.human_simulation.agents_distances[:, agent_index, :]
             < self.min_collision_distance
         )
+        is_collision_with_agents[:, agent_index] = False
 
         self.is_collision_with_agents = is_collision_with_agents.any(dim=-1)
 
@@ -403,11 +413,11 @@ class Scenario(BaseScenario):
         )
         self.is_collision_with_obstacles = is_collision_with_obstacles.any(dim=-1)
 
-        self.rew = self.rew - 400 * (
-            is_collision_with_agents | is_collision_with_obstacles
+        rew = rew - 400 * (
+            self.is_collision_with_agents | self.is_collision_with_obstacles
         )
 
-        return self.rew
+        return rew
 
     def observation(self, agent: Agent):
         goal_poses = []
@@ -416,6 +426,7 @@ class Scenario(BaseScenario):
                 goal_poses.append(agent.state.pos - a.goal.state.pos)
         else:
             goal_poses.append(agent.state.pos - agent.goal.state.pos)
+            # TODO - make this in polar coordinates
         return torch.cat(
             [
                 agent.state.vel,
@@ -450,7 +461,7 @@ class Scenario(BaseScenario):
 
         is_done = (
             self.is_collision_with_agents
-            | self.is_collision_with_obstacle
+            | self.is_collision_with_obstacles
             | self.goal_reached  # check if agent is on goal
         )
         # TODO - check if agent is on goal
