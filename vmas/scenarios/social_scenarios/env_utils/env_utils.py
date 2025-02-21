@@ -150,7 +150,7 @@ def spawn_random_obstacles(
             occupied_positions=occupied_positions,
             env_index=env_index,
             world=world,
-            min_dist_between_entities=min_distance_between_entities * 2,
+            min_dist_between_entities=min_distance_between_entities * 1.5,
             x_bounds=(-world_spawning_x, world_spawning_x),
             y_bounds=(-world_spawning_y, world_spawning_y),
         )

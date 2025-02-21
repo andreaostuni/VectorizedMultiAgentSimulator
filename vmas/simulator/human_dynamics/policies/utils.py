@@ -1,10 +1,10 @@
 import torch
-from typing import Tuple, List
-from vmas.simulator.core import Box, Sphere, Line, Entity, EntityState
+from typing import Tuple, List, Optional
+from vmas.simulator.core import Box, Sphere, Line, Entity, EntityState, Landmark
 from vmas.simulator.core import Agent
 
 
-def agent_to_tensor(agent: Agent) -> torch.Tensor:
+def agent_to_tensor(agent: Agent, env_index: Optional[int] = None) -> torch.Tensor:
     """
     Convert an Agent object to a tensor
 
@@ -19,6 +19,20 @@ def agent_to_tensor(agent: Agent) -> torch.Tensor:
         (x, y, vx, vy, radius, goal_x, goal_y, group_id)
     """
     # TODO implement group_id
+    if env_index is not None:
+        return torch.cat(
+            [
+                agent.state.pos[env_index],  # x, y
+                # if the vel is nan, set it to 0
+                torch.nan_to_num(agent.state.vel[env_index], nan=0.0),  # vx, vy
+                torch.tensor(
+                    [agent.shape.radius], device=agent.state.pos.device
+                ),  # radius
+                agent.goal.state.pos[env_index],  # goal_x, goal_y
+                torch.tensor([-1], device=agent.state.pos.device),  # group_id
+            ],
+            dim=-1,
+        )
     return torch.cat(
         [
             agent.state.pos,  # x, y
@@ -36,7 +50,9 @@ def agent_to_tensor(agent: Agent) -> torch.Tensor:
     )
 
 
-def agents_to_tensor(agents: List[Agent]) -> torch.Tensor:
+def agents_to_tensor(
+    agents: List[Agent], env_index: Optional[int] = None
+) -> torch.Tensor:
     """
     Convert a list of Agent objects to a tensor
 
@@ -51,6 +67,8 @@ def agents_to_tensor(agents: List[Agent]) -> torch.Tensor:
         (x, y, vx, vy, radius, goal_x, goal_y, group_id)
     """
     # TODO implement group_id
+    if env_index is not None:
+        return torch.stack([agent_to_tensor(agent, env_index) for agent in agents])
     # stack the agents in the first dimension
     return (
         torch.stack([agent_to_tensor(agent) for agent in agents])
@@ -60,7 +78,7 @@ def agents_to_tensor(agents: List[Agent]) -> torch.Tensor:
 
 
 def distance_agents_to_lines(
-    agents: torch.Tensor, lines: torch.Tensor, env_index: int = None
+    agents: torch.Tensor, lines: torch.Tensor, env_index: Optional[int] = None
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Calculate the distance between an agent and a line
@@ -299,7 +317,9 @@ def entity_to_tensor(entity: Entity) -> torch.Tensor:
         raise NotImplementedError("The entity shape is not supported")
 
 
-def box_to_tensor(state: EntityState, box: Box) -> torch.Tensor:
+def box_to_tensor(
+    state: EntityState, box: Box, env_index: Optional[int] = None
+) -> torch.Tensor:
     """
     Convert a Box object to a tensor
     in the format [x, y] for each vertex
@@ -313,6 +333,40 @@ def box_to_tensor(state: EntityState, box: Box) -> torch.Tensor:
         (n_envs, 4, 2)
     """
 
+    expanded_half_box_length = box.length / 2  # scalar
+    expanded_half_box_width = box.width / 2  # scalar
+
+    if env_index is not None:
+        rotated_vector = torch.cat(
+            [state.rot[env_index].cos(), state.rot[env_index].sin()], dim=-1
+        )
+        rot_2 = state.rot[env_index] + torch.pi / 2
+        rotated_vector2 = torch.cat([rot_2.cos(), rot_2.sin()], dim=-1)
+
+        p1 = (
+            state.pos[env_index]
+            + rotated_vector * expanded_half_box_length
+            + rotated_vector2 * expanded_half_box_width
+        )
+        p2 = (
+            state.pos[env_index]
+            - rotated_vector * expanded_half_box_length
+            + rotated_vector2 * expanded_half_box_width
+        )
+
+        p3 = (
+            state.pos[env_index]
+            - rotated_vector * expanded_half_box_length
+            - rotated_vector2 * expanded_half_box_width
+        )
+
+        p4 = (
+            state.pos[env_index]
+            + rotated_vector * expanded_half_box_length
+            - rotated_vector2 * expanded_half_box_width
+        )
+        return torch.stack([p1, p2, p3, p4]).to(state.pos.device)
+
     # transform the width and length to vertices of the box
 
     # Rotate normal vector by the angle of the box
@@ -321,9 +375,6 @@ def box_to_tensor(state: EntityState, box: Box) -> torch.Tensor:
     )  # (n_envs, 2)
     rot_2 = state.rot + torch.pi / 2  # rotate by 90 degrees
     rotated_vector2 = torch.cat([rot_2.cos(), rot_2.sin()], dim=-1)  # (n_envs, 2)
-
-    expanded_half_box_length = box.length / 2  # scalar
-    expanded_half_box_width = box.width / 2  # scalar
 
     p1 = (
         state.pos  # (n_envs, 2)
@@ -351,7 +402,9 @@ def box_to_tensor(state: EntityState, box: Box) -> torch.Tensor:
     )  # (n_envs, 4, 2)
 
 
-def sphere_to_tensor(state: EntityState, sphere: Sphere) -> torch.Tensor:
+def sphere_to_tensor(
+    state: EntityState, sphere: Sphere, env_index: Optional[int] = None
+) -> torch.Tensor:
     """
     Convert a Sphere object to a tensor
     representing the center and radius of the sphere
@@ -359,6 +412,13 @@ def sphere_to_tensor(state: EntityState, sphere: Sphere) -> torch.Tensor:
         sphere (Sphere): The sphere to convert
 
     """
+    if env_index is not None:
+        return torch.cat(
+            [
+                state.pos[env_index],
+                torch.tensor([sphere.radius], device=state.pos.device),
+            ]
+        )
     return torch.cat(
         [
             state.pos,
@@ -370,7 +430,9 @@ def sphere_to_tensor(state: EntityState, sphere: Sphere) -> torch.Tensor:
     )  # (n_envs, 3)
 
 
-def line_to_tensor(state: EntityState, line: Line) -> torch.Tensor:
+def line_to_tensor(
+    state: EntityState, line: Line, env_index: Optional[int] = None
+) -> torch.Tensor:
     """
     Convert a Line object to a tensor
     representing the start and end points of the line
@@ -380,6 +442,23 @@ def line_to_tensor(state: EntityState, line: Line) -> torch.Tensor:
 
     """
     half_length = line.length / 2  # scalar
+    if env_index is not None:
+        start = (
+            state.pos[env_index]  # (2)
+            + torch.cat(
+                [state.rot[env_index].cos(), state.rot[env_index].sin()], dim=-1
+            )
+            * half_length
+        )  # (2)
+        end = (
+            state.pos[env_index]
+            - torch.cat(
+                [state.rot[env_index].cos(), state.rot[env_index].sin()], dim=-1
+            )
+            * half_length
+        )
+        return torch.stack([start, end]).to(state.pos.device)  # (2, 2)
+
     start = (
         state.pos  # (n_envs, 2)
         + torch.cat([state.rot.cos(), state.rot.sin()], dim=-1) * half_length
@@ -390,3 +469,83 @@ def line_to_tensor(state: EntityState, line: Line) -> torch.Tensor:
     return (
         torch.stack([start, end]).permute(1, 0, 2).to(state.pos.device)
     )  # (n_envs, 2, 2)
+
+
+def boxes_to_tensor(
+    boxes: List[Landmark], env_index: Optional[int] = None
+) -> torch.Tensor:
+    """
+    Convert a list of Box objects to a tensor
+    representing the vertices of the boxes
+
+    Args:
+        boxes (List[Box]): The boxes to convert
+
+    Returns:
+        torch.Tensor: The tensor representation of the boxes
+        (n_envs, n_boxes, 4, 2)
+    """
+    if env_index is not None:
+        return torch.stack(
+            [box_to_tensor(box.state, box.shape, env_index) for box in boxes]
+        )
+    return (
+        torch.stack([box_to_tensor(box.state, box.shape) for box in boxes])
+        .permute(1, 0, 2, 3)
+        .to(boxes[0].state.pos.device)
+    )  # (n_envs, n_boxes, 4, 2)
+
+
+def spheres_to_tensor(
+    spheres: List[Landmark], env_index: Optional[int] = None
+) -> torch.Tensor:
+    """
+    Convert a list of Sphere objects to a tensor
+    representing the center and radius of the spheres
+
+    Args:
+        spheres (List[Sphere]): The spheres to convert
+
+    Returns:
+        torch.Tensor: The tensor representation of the spheres
+        (n_envs, n_spheres, 3)
+    """
+    if env_index is not None:
+        return torch.stack(
+            [
+                sphere_to_tensor(sphere.state, sphere.shape, env_index)
+                for sphere in spheres
+            ]
+        )
+    return (
+        torch.stack(
+            [sphere_to_tensor(sphere.state, sphere.shape) for sphere in spheres]
+        )
+        .permute(1, 0, 2)
+        .to(spheres[0].state.pos.device)
+    )  # (n_envs, n_spheres, 3)
+
+
+def lines_to_tensor(
+    lines: List[Landmark], env_index: Optional[int] = None
+) -> torch.Tensor:
+    """
+    Convert a list of Line objects to a tensor
+    representing the start and end points of the lines
+
+    Args:
+        lines (List[Line]): The lines to convert
+
+    Returns:
+        torch.Tensor: The tensor representation of the lines
+        (n_envs, n_lines, 2, 2)
+    """
+    if env_index is not None:
+        return torch.stack(
+            [line_to_tensor(line.state, line.shape, env_index) for line in lines]
+        )
+    return (
+        torch.stack([line_to_tensor(line.state, line.shape) for line in lines])
+        .permute(1, 0, 2, 3)
+        .to(lines[0].state.pos.device)
+    )  # (n_envs, n_lines, 2, 2)

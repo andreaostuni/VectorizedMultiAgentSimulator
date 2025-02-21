@@ -136,9 +136,6 @@ def use_vmas_env(
     if render and save_render:
         save_video(scenario_name, frame_list, fps=1 / env.scenario.world.dt)
 
-    # Save the profiler trace to a JSON file
-    prof.export_chrome_trace("trace.json")
-
 
 if __name__ == "__main__":
 

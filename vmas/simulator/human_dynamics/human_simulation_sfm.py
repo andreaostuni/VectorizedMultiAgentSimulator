@@ -3,9 +3,9 @@ from typing import Optional
 import torch
 from vmas.simulator.human_dynamics.policies.sfm import SocialForcePolicy
 from vmas.simulator.human_dynamics.policies.utils import (
-    box_to_tensor,
-    line_to_tensor,
-    sphere_to_tensor,
+    boxes_to_tensor,
+    lines_to_tensor,
+    spheres_to_tensor,
     agents_to_tensor,
 )
 
@@ -34,6 +34,9 @@ class HumanSimulation:
 
         self.robots = []  # robots are agents with policies
         self.humans = []  # humans are agents with scripts
+        self.box_obstacles = []
+        self.sphere_obstacles = []
+        self.line_obstacles = []
         self.agents_tensor = None
         self.old_agent_tensor = None
         self.obstacle_distances = None
@@ -68,53 +71,59 @@ class HumanSimulation:
         :param world: The world to simulate.
         :return:
         """
+        if not self.robots:
+            self.robots = world.policy_agents
+            self.humans = world.scripted_agents
+            for landmark in world.landmarks:
+                if landmark.collide:
+                    if isinstance(landmark.shape, Sphere):
+                        self.sphere_obstacles.append(landmark)
+                    elif isinstance(landmark.shape, Line):
+                        self.line_obstacles.append(landmark)
+                    elif isinstance(landmark.shape, Box):
+                        self.box_obstacles.append(landmark)
+                    else:
+                        raise ValueError("Obstacle shape not recognized")
 
-        self.robots = world.policy_agents
-        self.humans = world.scripted_agents
-
-        self.agents_tensor = agents_to_tensor(
-            self.robots + self.humans
-        )  # (batch_dim, n_agents, 8)
         self.old_agent_tensor = None
         self.obstacle_distances = None
         self.agents_distances = None
         self.social_work = None
 
-        box_obstacles = []
-        sphere_obstacles = []
-        line_obstacles = []
+        if env_index is not None:
 
-        for landmark in world.landmarks:
+            self.agents_tensor[env_index] = agents_to_tensor(
+                self.robots + self.humans, env_index=env_index
+            )
+            if len(self.box_obstacles) > 0:
+                self.box_obstacles_tensor[env_index] = boxes_to_tensor(
+                    self.box_obstacles, env_index=env_index
+                )
+            if len(self.sphere_obstacles) > 0:
+                self.sphere_obstacles_tensor[env_index] = spheres_to_tensor(
+                    self.sphere_obstacles, env_index=env_index
+                )
+            if len(self.line_obstacles) > 0:
+                self.line_obstacles_tensor[env_index] = lines_to_tensor(
+                    self.line_obstacles, env_index=env_index
+                )
+        else:
+            self.agents_tensor = agents_to_tensor(
+                self.robots + self.humans
+            )  # (batch_dim, n_agents, 8)
 
-            # if the landmark name contains "obstacle", add it as an obstacle
-            if landmark.collide:
-                if isinstance(landmark.shape, Sphere):
-                    sphere_obstacles.append(
-                        sphere_to_tensor(landmark.state, landmark.shape)
-                    )
-                elif isinstance(landmark.shape, Line):
-                    line_obstacles.append(
-                        line_to_tensor(landmark.state, landmark.shape)
-                    )
-                elif isinstance(landmark.shape, Box):
-                    box_obstacles.append(box_to_tensor(landmark.state, landmark.shape))
-                else:
-                    raise ValueError("Obstacle shape not recognized")
-
-        if len(box_obstacles) > 0:
-            # box_obstacles_tensor: (batch_dim, n_obstacles, 4, 2)
-            # box_obstacles: list of tensors of shape (batch_dim, 4, 2)
-            self.box_obstacles_tensor = torch.stack(box_obstacles, dim=1).to(
-                self.device
-            )  # (batch_dim, n_obstacles, 4, 2)
-        if len(sphere_obstacles) > 0:
-            self.sphere_obstacles_tensor = torch.stack(sphere_obstacles, dim=1).to(
-                self.device
-            )  # (batch_dim, n_obstacles, 3)
-        if len(line_obstacles) > 0:
-            self.line_obstacles_tensor = torch.stack(line_obstacles, dim=1).to(
-                self.device
-            )  # (batch_dim, n_obstacles, 2, 2)
+            if len(self.box_obstacles) > 0:
+                # box_obstacles_tensor: (batch_dim, n_obstacles, 4, 2)
+                self.box_obstacles_tensor = boxes_to_tensor(self.box_obstacles)
+                # (batch_dim, n_obstacles, 4, 2)
+            if len(self.sphere_obstacles) > 0:
+                self.sphere_obstacles_tensor = spheres_to_tensor(
+                    self.sphere_obstacles
+                )  # (batch_dim, n_obstacles, 3)
+            if len(self.line_obstacles) > 0:
+                self.line_obstacles_tensor = lines_to_tensor(
+                    self.line_obstacles
+                )  # (batch_dim, n_obstacles, 2, 2)
 
     def simulate_policy(self, world: World):
         """
