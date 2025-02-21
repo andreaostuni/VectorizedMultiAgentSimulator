@@ -442,7 +442,7 @@ class Scenario(BaseScenario):
                     distance_to_goal.unsqueeze(-1),
                     angle_to_goal.unsqueeze(-1),
                     agent_vel.unsqueeze(-1),
-                    agent.state.ang_vel.unsqueeze(-1),
+                    agent.state.ang_vel,
                 ]
                 + ([agent.sensors[0].measure()] if self.collisions else [])
                 + ([agent.sensors[1].measure()] if len(agent.sensors) > 1 else []),
@@ -474,10 +474,10 @@ class Scenario(BaseScenario):
 
     def info(self, agent: Agent) -> Dict[str, Tensor]:
         return {
-            "social_work": self.human_simulation.social_work,
-            "is_collision_with_agents": self.is_collision_with_agents,
-            "is_collision_with_obstacles": self.is_collision_with_obstacles,
-            "goal_reached": self.goal_reached,
+            # "social_work": self.human_simulation.social_work,
+            # "is_collision_with_agents": self.is_collision_with_agents,
+            # "is_collision_with_obstacles": self.is_collision_with_obstacles,
+            # "goal_reached": self.goal_reached,
         }
 
     def extra_render(self, env_index: int = 0) -> "List[Geom]":
