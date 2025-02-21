@@ -221,78 +221,78 @@ class Scenario(BaseScenario):
         return world
 
     def reset_world_at(self, env_index: int = None):
+        with torch.profiler.record_function("reset_world_at"):
+            spawning_x = self.world_spawning_x
+            spawning_y = self.world_spawning_y
+            x_semidim = self.x_semidim_mean
+            y_semidim = self.y_semidim_mean
 
-        spawning_x = self.world_spawning_x
-        spawning_y = self.world_spawning_y
-        x_semidim = self.x_semidim_mean
-        y_semidim = self.y_semidim_mean
+            scenario_type = human_utils.Scenario.sample_scenario()
+            # scenario_type = human_utils.Scenario.RANDOM
 
-        scenario_type = human_utils.Scenario.sample_scenario()
-        # scenario_type = human_utils.Scenario.RANDOM
+            # TODO - make boundaries variable
+            # use the world_spawning_x as a mean
 
-        # TODO - make boundaries variable
-        # use the world_spawning_x as a mean
+            if scenario_type == human_utils.Scenario.RANDOM:
+                spawning_x = spawning_y = max(spawning_x, spawning_y)
+                x_semidim = y_semidim = max(x_semidim, y_semidim)
 
-        if scenario_type == human_utils.Scenario.RANDOM:
-            spawning_x = spawning_y = max(spawning_x, spawning_y)
-            x_semidim = y_semidim = max(x_semidim, y_semidim)
-
-        occupied_positions = human_utils.generate_scenario(
-            self.world.policy_agents,
-            self.world.scripted_agents,
-            self.world,
-            env_index,
-            self.min_distance_between_entities,
-            (
-                -spawning_x,
-                spawning_x,
-            ),
-            (
-                -spawning_y,
-                spawning_y,
-            ),
-            current_scenario=scenario_type,
-        )
-
-        if self.enforce_bounds:
-            env_utils.spawn_boundaries(
-                self.boundaries,
-                x_semidim,
-                y_semidim,
-                self.world.device,
+            occupied_positions = human_utils.generate_scenario(
+                self.world.policy_agents,
+                self.world.scripted_agents,
+                self.world,
                 env_index,
+                self.min_distance_between_entities,
+                (
+                    -spawning_x,
+                    spawning_x,
+                ),
+                (
+                    -spawning_y,
+                    spawning_y,
+                ),
+                current_scenario=scenario_type,
             )
 
-        env_utils.spawn_random_obstacles(
-            env_index,
-            occupied_positions,
-            self.world,
-            self.box_obstacles,
-            self.sphere_obstacles,
-            self.min_distance_between_entities,
-            spawning_x,
-            spawning_y,
-            # self.world_spawning_x,
-            # self.world_spawning_y,
-        )
-        self.human_simulation.reset(self.world)
+            if self.enforce_bounds:
+                env_utils.spawn_boundaries(
+                    self.boundaries,
+                    x_semidim,
+                    y_semidim,
+                    self.world.device,
+                    env_index,
+                )
 
-        self.agents_state_buffer.reset(env_index=env_index)
+            env_utils.spawn_random_obstacles(
+                env_index,
+                occupied_positions,
+                self.world,
+                self.box_obstacles,
+                self.sphere_obstacles,
+                self.min_distance_between_entities,
+                spawning_x,
+                spawning_y,
+                # self.world_spawning_x,
+                # self.world_spawning_y,
+            )
+            self.human_simulation.reset(self.world)
 
-        if env_index is None:
-            self.is_collision_with_agents = torch.zeros(
-                self.world.batch_dim, device=self.world.device, dtype=torch.bool
-            )
-            self.is_collision_with_obstacles = torch.zeros(
-                self.world.batch_dim, device=self.world.device, dtype=torch.bool
-            )
-            self.goal_reached = torch.zeros(
-                self.world.batch_dim, device=self.world.device, dtype=torch.bool
-            )
-        else:
-            self.is_collision_with_agents[env_index] = False
-            self.is_collision_with_obstacles[env_index] = False
-            self.goal_reached[env_index] = False
+            self.agents_state_buffer.reset(env_index=env_index)
+
+            if env_index is None:
+                self.is_collision_with_agents = torch.zeros(
+                    self.world.batch_dim, device=self.world.device, dtype=torch.bool
+                )
+                self.is_collision_with_obstacles = torch.zeros(
+                    self.world.batch_dim, device=self.world.device, dtype=torch.bool
+                )
+                self.goal_reached = torch.zeros(
+                    self.world.batch_dim, device=self.world.device, dtype=torch.bool
+                )
+            else:
+                self.is_collision_with_agents[env_index] = False
+                self.is_collision_with_obstacles[env_index] = False
+                self.goal_reached[env_index] = False
 
     def reward(self, agent: Agent):
         """
