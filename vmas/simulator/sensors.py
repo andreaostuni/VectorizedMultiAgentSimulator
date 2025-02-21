@@ -266,10 +266,21 @@ class AgentsPoses(Sensor):
         # poses = torch.gather(agents, 0, indexes)  # (batch_dim, k, 2)
 
         poses = torch.gather(agents, 0, indexes_agents.clip(min=0))
+        velocities = torch.gather(agents, 0, indexes_agents.clip(min=0))
         # replace the -1 indexes with zeros
 
         relative_poses = poses - self.agent.state.pos.unsqueeze(0)  # (batch_dim, k, 2)
         angles = torch.atan2(relative_poses[..., 1], relative_poses[..., 0])
+        velocities_norms = velocities.norm(dim=-1)
+        if torch.linalg.norm(self.agent.state.vel, dim=-1) < 1e-5:
+            angles_velocities = torch.atan2(
+                velocities[..., 1], velocities[..., 0]
+            ) - torch.atan2(self.agent.state.rot.sin(), self.agent.state.rot.cos())
+        else:
+            angles_velocities = torch.atan2(velocities[..., 1], velocities[..., 0]) - (
+                torch.atan2(self.agent.state.vel[..., 1], self.agent.state.vel[..., 0])
+            )
+
         if (indexes == -1).any():
             angles = torch.where(
                 indexes != -1, angles, torch.tensor(0.0, device=self._world.device)
@@ -277,8 +288,20 @@ class AgentsPoses(Sensor):
             distances = torch.where(
                 indexes != -1, distances, torch.tensor(0.0, device=self._world.device)
             )
+            velocities_norms = torch.where(
+                indexes != -1,
+                velocities_norms,
+                torch.tensor(0.0, device=self._world.device),
+            )
+            angles_velocities = torch.where(
+                indexes != -1,
+                angles_velocities,
+                torch.tensor(0.0, device=self._world.device),
+            )
         return (
-            torch.stack([distances, angles], dim=-1)
+            torch.stack(
+                [distances, angles, velocities_norms, angles_velocities], dim=-1
+            )
             .permute(1, 0, 2)
             .flatten(start_dim=1)
         )  # (batch_dim, 2 * k)

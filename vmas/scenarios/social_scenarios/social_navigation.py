@@ -28,7 +28,6 @@ from typing import Optional
 class Scenario(BaseScenario):
     def make_world(self, batch_dim: int, device: torch.device, **kwargs):
         self.plot_grid = False
-        self.fixed_passage = kwargs.pop("fixed_passage", False)
         self.n_agents = kwargs.pop("n_agents", 1)
 
         self.n_scripted_agents = kwargs.pop("n_scripted_agents", 2)  # scripted agents
@@ -216,8 +215,6 @@ class Scenario(BaseScenario):
             self.n_sphere_obstacles,
             self.agent_radius,
         )
-        self.pos_rew = torch.zeros(batch_dim, device=device)
-        self.final_rew = self.pos_rew.clone()
         return world
 
     def reset_world_at(self, env_index: int = None):
@@ -322,134 +319,142 @@ class Scenario(BaseScenario):
             A tensor with shape [batch_dim].
         """
         # Initialize
-        rew = torch.zeros(self.world.batch_dim, device=self.world.device)
+        with torch.profiler.record_function("reward"):
+            rew = torch.zeros(self.world.batch_dim, device=self.world.device)
 
-        # Get the index of the current agent
-        agent_index = self.human_simulation.find_agent_index(agent)
-        cd = 1.0
+            # Get the index of the current agent
+            agent_index = self.human_simulation.find_agent_index(agent)
+            cd = 1.0
 
-        # Get the distance to the goal
-        distance_to_goal = torch.linalg.vector_norm(
-            agent.state.pos - agent.goal.state.pos, dim=-1
-        )
-        # [reward] forward movement
-        latest_state = self.agents_state_buffer.get_agent_last_state(agent_index)
-        if latest_state is not None:
-            previous_distance_to_goal = torch.linalg.vector_norm(
-                latest_state[:, :2] - latest_state[:, 5:7], dim=-1
+            # Get the distance to the goal
+            distance_to_goal = torch.linalg.vector_norm(
+                agent.state.pos - agent.goal.state.pos, dim=-1
             )
-            forward_movement = previous_distance_to_goal - distance_to_goal
-            Rd = forward_movement * 10.0
-            Rd.clamp(min=-1.0, max=1.0)
+            # [reward] forward movement
+            latest_state = self.agents_state_buffer.get_agent_last_state(agent_index)
+            if latest_state is not None:
+                previous_distance_to_goal = torch.linalg.vector_norm(
+                    latest_state[:, :2] - latest_state[:, 5:7], dim=-1
+                )
+                forward_movement = previous_distance_to_goal - distance_to_goal
+                Rd = forward_movement * 10.0
+                Rd.clamp(min=-1.0, max=1.0)
 
-        # [reward] Heading towards the goal
+            # [reward] Heading towards the goal
 
-        ch = 0.4
-        # check if the agent is moving towards the goal
-        # the direction of the agent is the nomalized velocity
-        # the direction to the goal is the normalized vector from the agent to the goal
+            ch = 0.4
+            # check if the agent is moving towards the goal
+            # the direction of the agent is the nomalized velocity
+            # the direction to the goal is the normalized vector from the agent to the goal
 
-        desired_direction_angle = torch.atan2(
-            (agent.goal.state.pos - agent.state.pos)[:, 1],
-            (agent.goal.state.pos - agent.state.pos)[:, 0],
-        )
-        # if agent.state.vel is close to zero, the agent is not moving
+            desired_direction_angle = torch.atan2(
+                (agent.goal.state.pos - agent.state.pos)[:, 1],
+                (agent.goal.state.pos - agent.state.pos)[:, 0],
+            )
+            # if agent.state.vel is close to zero, the agent is not moving
 
-        agent_yaw = torch.where(
-            (torch.linalg.vector_norm(agent.state.vel, dim=-1) < 10e-5).unsqueeze(-1),
-            torch.atan2(torch.sin(agent.state.rot), torch.cos(agent.state.rot)),
-            torch.atan2(agent.state.vel[:, 1:2], agent.state.vel[:, 0:1]),
-        ).squeeze(-1)
+            agent_yaw = torch.where(
+                (torch.linalg.vector_norm(agent.state.vel, dim=-1) < 10e-5).unsqueeze(
+                    -1
+                ),
+                torch.atan2(torch.sin(agent.state.rot), torch.cos(agent.state.rot)),
+                torch.atan2(agent.state.vel[:, 1:2], agent.state.vel[:, 0:1]),
+            ).squeeze(-1)
 
-        angle = desired_direction_angle - agent_yaw
-        Rh = 1.0 - 2 * torch.sqrt(torch.abs(angle / torch.pi))
+            angle = desired_direction_angle - agent_yaw
+            Rh = 1.0 - 2 * torch.sqrt(torch.abs(angle / torch.pi))
 
-        # [penalty] linear velocity
-        cv = 0.8
-        # check if the agent is moving too slow
+            # [penalty] linear velocity
+            cv = 0.8
+            # check if the agent is moving too slow
 
-        Rv = (
-            torch.linalg.vector_norm(agent.state.vel, dim=-1) - agent.max_speed
-        ) / agent.max_speed
+            Rv = (
+                torch.linalg.vector_norm(agent.state.vel, dim=-1) - agent.max_speed
+            ) / agent.max_speed
 
-        # [penalty] Obstacle avoidance
+            # [penalty] Obstacle avoidance
 
-        co = 2.0
-        # min distance to the obstacles
-        # TODO get it from the human simulation
-        # use the lidar sensor to get the distance to the obstacles
-        # get the distance to the closest obstacle
-        Ro = (agent.sensors[0].measure() - agent.sensors[0]._max_range).min(dim=-1)[
-            0
-        ] / agent.sensors[0]._max_range
+            co = 2.0
+            # min distance to the obstacles
+            # TODO get it from the human simulation
+            # use the lidar sensor to get the distance to the obstacles
+            # get the distance to the closest obstacle
+            Ro = (agent.sensors[0].measure() - agent.sensors[0]._max_range).min(dim=-1)[
+                0
+            ] / agent.sensors[0]._max_range
 
-        # [penalty] social disturbance
-        cp = 2.0
-        Rp = -torch.clamp(
-            1 / (agent.sensors[1].measure()[:, 0]).min(dim=-1)[0], min=0.0, max=2.5
-        )
-        cs = 2.5
-        Rs = self.human_simulation.social_work[:, agent_index]
-        Rs = -torch.clamp(Rs, min=0.0, max=2.5)
+            # [penalty] social disturbance
+            cp = 2.0
+            Rp = -torch.clamp(
+                1 / (agent.sensors[1].measure()[:, 0]).min(dim=-1)[0], min=0.0, max=2.5
+            )
+            cs = 2.5
+            Rs = self.human_simulation.social_work[:, agent_index]
+            Rs = -torch.clamp(Rs, min=0.0, max=2.5)
 
-        rew = Rd * cd + Rh * ch + Rv * cv + Ro * co + Rp * cp + Rs * cs
+            rew = Rd * cd + Rh * ch + Rv * cv + Ro * co + Rp * cp + Rs * cs
 
-        # [penalty] time penalty
-        rew = rew - 0.5
+            # [penalty] time penalty
+            rew = rew - 0.5
 
-        # [reward] goal reached
-        # check if the agent is on the goal
-        self.goal_reached = (
-            distance_to_goal - agent.shape.radius
-        ) < agent.goal.shape.radius
-        rew = rew + self.final_reward * self.goal_reached
+            # [reward] goal reached
+            # check if the agent is on the goal
+            self.goal_reached = (
+                distance_to_goal - agent.shape.radius
+            ) < agent.goal.shape.radius
+            rew = rew + self.final_reward * self.goal_reached
 
-        # [penalty] agent-agent collision
+            # [penalty] agent-agent collision
 
-        is_collision_with_agents = (
-            self.human_simulation.agents_distances[:, agent_index, :]
-            < self.min_collision_distance
-        )
-        is_collision_with_agents[:, agent_index] = False
+            is_collision_with_agents = (
+                self.human_simulation.agents_distances[:, agent_index, :]
+                < self.min_collision_distance
+            )
+            is_collision_with_agents[:, agent_index] = False
 
-        self.is_collision_with_agents = is_collision_with_agents.any(dim=-1)
+            self.is_collision_with_agents = is_collision_with_agents.any(dim=-1)
 
-        is_collision_with_obstacles = (
-            self.human_simulation.obstacle_distances[:, agent_index, :]
-            < self.min_collision_distance
-        )
-        self.is_collision_with_obstacles = is_collision_with_obstacles.any(dim=-1)
+            is_collision_with_obstacles = (
+                self.human_simulation.obstacle_distances[:, agent_index, :]
+                < self.min_collision_distance
+            )
+            self.is_collision_with_obstacles = is_collision_with_obstacles.any(dim=-1)
 
-        rew = rew - 400 * (
-            self.is_collision_with_agents | self.is_collision_with_obstacles
-        )
+            rew = rew - 400 * (
+                self.is_collision_with_agents | self.is_collision_with_obstacles
+            )
 
-        return rew
+            return rew
 
     def observation(self, agent: Agent):
-        distance_to_goal = torch.linalg.vector_norm(
-            agent.state.pos - agent.goal.state.pos, dim=-1
-        )
-        angle_to_goal = torch.atan2(
-            agent.goal.state.pos[:, 1] - agent.state.pos[:, 1],
-            agent.goal.state.pos[:, 0] - agent.state.pos[:, 0],
-        )
+        with torch.profiler.record_function("observation"):
+            distance_to_goal = torch.linalg.vector_norm(
+                agent.state.pos - agent.goal.state.pos, dim=-1
+            )
+            angle_to_goal = torch.atan2(
+                agent.goal.state.pos[:, 1] - agent.state.pos[:, 1],
+                agent.goal.state.pos[:, 0] - agent.state.pos[:, 0],
+            )
+            agent_vel = agent.state.vel.norm(dim=-1)
 
-        return torch.cat(
-            [
-                distance_to_goal.unsqueeze(-1),
-                angle_to_goal.unsqueeze(-1),
-                agent.state.vel,
-            ]
-            + ([agent.sensors[0].measure()] if self.collisions else [])
-            + ([agent.sensors[1].measure()] if len(agent.sensors) > 1 else []),
-            dim=-1,
-        )
+            return torch.cat(
+                [
+                    distance_to_goal.unsqueeze(-1),
+                    angle_to_goal.unsqueeze(-1),
+                    agent_vel.unsqueeze(-1),
+                    agent.state.ang_vel.unsqueeze(-1),
+                ]
+                + ([agent.sensors[0].measure()] if self.collisions else [])
+                + ([agent.sensors[1].measure()] if len(agent.sensors) > 1 else []),
+                dim=-1,
+            )
 
     def pre_step(self):
-        self.human_simulation.simulate_policy(self.world)
-        self.agents_state_buffer.add_state(self.human_simulation.old_agent_tensor)
-        super().pre_step()
+        with torch.profiler.record_function("prestep"):
+            with torch.profiler.record_function("simulate_policy"):
+                self.human_simulation.simulate_policy(self.world)
+            self.agents_state_buffer.add_state(self.human_simulation.old_agent_tensor)
+            super().pre_step()
 
     def done(self):
         """
@@ -460,27 +465,19 @@ class Scenario(BaseScenario):
         is_done = torch.zeros(
             self.world.batch_dim, device=self.world.device, dtype=torch.bool
         )
-        # is_collision_with_obstacle = torch.zeros(
-        #     self.world.batch_dim, device=self.world.device, dtype=torch.bool
-        # )
-
-        # is_collision_with_agents = torch.zeros(
-        #     self.world.batch_dim, device=self.world.device, dtype=torch.bool
-        # )
-
         is_done = (
             self.is_collision_with_agents
             | self.is_collision_with_obstacles
             | self.goal_reached  # check if agent is on goal
         )
-        # TODO - check if agent is on goal
         return is_done
 
     def info(self, agent: Agent) -> Dict[str, Tensor]:
         return {
-            "pos_rew": self.pos_rew if self.shared_rew else agent.pos_rew,
-            "final_rew": self.final_rew,
-            "agent_collisions": agent.agent_collision_rew,
+            "social_work": self.human_simulation.social_work,
+            "is_collision_with_agents": self.is_collision_with_agents,
+            "is_collision_with_obstacles": self.is_collision_with_obstacles,
+            "goal_reached": self.goal_reached,
         }
 
     def extra_render(self, env_index: int = 0) -> "List[Geom]":
