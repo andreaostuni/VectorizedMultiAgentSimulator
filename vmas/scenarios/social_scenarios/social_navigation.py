@@ -449,6 +449,17 @@ class Scenario(BaseScenario):
                 dim=-1,
             )
 
+    def mpc_state(self, agent: Agent):
+        return torch.cat(
+            [
+                agent.state.pos,
+                agent.state.rot,
+                agent.state.vel,
+                agent.state.ang_vel,
+            ],
+            dim=-1,
+        )
+
     def pre_step(self):
         with torch.profiler.record_function("prestep"):
             with torch.profiler.record_function("simulate_policy"):
@@ -466,9 +477,9 @@ class Scenario(BaseScenario):
             self.world.batch_dim, device=self.world.device, dtype=torch.bool
         )
         is_done = (
-            self.is_collision_with_agents
-            | self.is_collision_with_obstacles
-            | self.goal_reached  # check if agent is on goal
+            self.goal_reached  # check if agent is on goal
+            # | self.is_collision_with_agents
+            # | self.is_collision_with_obstacles
         )
         return is_done
 

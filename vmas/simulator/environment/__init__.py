@@ -4,6 +4,8 @@
 from enum import Enum
 
 from vmas.simulator.environment.environment import Environment
+from vmas.simulator.environment.envirnment_mpc import EnvironmentMPC
+from typing import Union
 
 
 class Wrapper(Enum):
@@ -15,8 +17,10 @@ class Wrapper(Enum):
     SKRL = 5
     SKRL_SINGLE_AGENT = 6
     SKRL_SINGLE_AGENT_VEC = 7
+    SKRL_SINGLE_AGENT_MPC = 8
+    SKRL_SINGLE_AGENT_VEC_MPC = 9
 
-    def get_env(self, env: Environment, **kwargs):
+    def get_env(self, env: Union[Environment, EnvironmentMPC], **kwargs):
         if self is self.RLLIB:
             from vmas.simulator.environment.rllib import VectorEnvWrapper
 
@@ -55,3 +59,16 @@ class Wrapper(Enum):
             )
 
             return SKRLSingleAgentVectorizedWrapper(env, **kwargs)
+
+        elif self is self.SKRL_SINGLE_AGENT_MPC:
+            from vmas.simulator.environment.skrl.skrl_single_agent import (
+                SKRLSingleAgentWrapperMPC,
+            )
+
+            return SKRLSingleAgentWrapperMPC(env, **kwargs)
+        elif self is self.SKRL_SINGLE_AGENT_VEC_MPC:
+            from vmas.simulator.environment.skrl.skrl_single_agent_vec import (
+                SKRLSingleAgentVectorizedWrapperMPC,
+            )
+
+            return SKRLSingleAgentVectorizedWrapperMPC(env, **kwargs)

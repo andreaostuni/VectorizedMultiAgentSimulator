@@ -5,7 +5,7 @@
 from typing import Optional, Union
 
 from vmas import scenarios
-from vmas.simulator.environment import Environment, Wrapper
+from vmas.simulator.environment import Environment, Wrapper, EnvironmentMPC
 from vmas.simulator.scenario import BaseScenario
 from vmas.simulator.utils import DEVICE_TYPING
 
@@ -57,6 +57,7 @@ def make_env(
             Default is ``False``.
         wrapper_kwargs (dict, optional): Keyword arguments to pass to the wrapper class. Default is ``{}``.
         **kwargs (dict, optional): Keyword arguments to pass to the :class:`~vmas.simulator.scenario.BaseScenario` class.
+        is_mpc (bool, optional): Whether to use the MPC environment. Default is ``False``.
 
     Examples:
         >>> from vmas import make_env
@@ -76,20 +77,38 @@ def make_env(
             scenario += ".py"
         scenario = scenarios.load(scenario).Scenario()
 
-    env = Environment(
-        scenario,
-        num_envs=num_envs,
-        device=device,
-        continuous_actions=continuous_actions,
-        max_steps=max_steps,
-        seed=seed,
-        dict_spaces=dict_spaces,
-        multidiscrete_actions=multidiscrete_actions,
-        clamp_actions=clamp_actions,
-        grad_enabled=grad_enabled,
-        terminated_truncated=terminated_truncated,
-        **kwargs,
-    )
+    # get from kwargs is_mpc
+    is_mpc = kwargs.pop("is_mpc", False)
+    if is_mpc:
+        env = EnvironmentMPC(
+            scenario,
+            num_envs=num_envs,
+            device=device,
+            continuous_actions=continuous_actions,
+            max_steps=max_steps,
+            seed=seed,
+            dict_spaces=dict_spaces,
+            multidiscrete_actions=multidiscrete_actions,
+            clamp_actions=clamp_actions,
+            grad_enabled=grad_enabled,
+            terminated_truncated=terminated_truncated,
+            **kwargs,
+        )
+    else:
+        env = Environment(
+            scenario,
+            num_envs=num_envs,
+            device=device,
+            continuous_actions=continuous_actions,
+            max_steps=max_steps,
+            seed=seed,
+            dict_spaces=dict_spaces,
+            multidiscrete_actions=multidiscrete_actions,
+            clamp_actions=clamp_actions,
+            grad_enabled=grad_enabled,
+            terminated_truncated=terminated_truncated,
+            **kwargs,
+        )
 
     if wrapper is not None and isinstance(wrapper, str):
         wrapper = Wrapper[wrapper.upper()]

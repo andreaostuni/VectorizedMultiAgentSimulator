@@ -7,6 +7,7 @@ import warnings
 import torch
 import numpy as np
 from vmas.simulator.environment.environment import Environment
+from vmas.simulator.environment.envirnment_mpc import EnvironmentMPC
 
 if (
     importlib.util.find_spec("gymnasium") is not None
@@ -117,3 +118,33 @@ class SKRLSingleAgentVectorizedWrapper(gym.Env):
             visualize_when_rgb=visualize_when_rgb,
             **kwargs,
         )
+
+
+class SKRLSingleAgentVectorizedWrapperMPC(SKRLSingleAgentVectorizedWrapper):
+    """Wrappers to convert vmas envs to gym envs for single agent with MPC."""
+
+    metadata = Environment.metadata
+
+    def __init__(
+        self,
+        env: EnvironmentMPC,
+    ):
+        super().__init__(env)
+
+        if self._env.dict_spaces:
+            self.first_key = list(self._env.mpc_state_space.keys())[0]
+
+        if self._env.dict_spaces:
+            # get the first key of the dictionary
+            self.single_mpc_state_space = _convert_space(
+                self._env.mpc_state_space[self.first_key]
+            )
+        else:
+            self.single_mpc_state_space = _convert_space(self._env.mpc_state_space[0])
+
+        self.mpc_state_space = batch_space(
+            self.single_mpc_state_space, n=self._num_envs
+        )
+
+    def mpc_state(self):
+        return self._env.mpc_state()[self.first_key if self._env.dict_spaces else 0]

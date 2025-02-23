@@ -4,9 +4,8 @@ from typing import ClassVar, Optional
 import importlib
 
 import numpy as np
-from vmas.simulator.environment.environment import (
-    Environment,
-)
+from vmas.simulator.environment.environment import Environment
+from vmas.simulator.environment.envirnment_mpc import EnvironmentMPC
 
 if (
     importlib.util.find_spec("gymnasium") is not None
@@ -60,30 +59,18 @@ class SKRLSingleAgentWrapper(gym.Env):
         if seed is not None:
             self._env.seed(seed)
         obs, info = self._env.reset(return_info=True)
-        if self._env.dict_spaces:
-            return obs[self.first_key], info[self.first_key]
-        return obs[0], info[0]
+        return obs[self.first_key if self._env.dict_spaces else 0]
 
     def step(self, action):
-        if self._env.dict_spaces:
-            action = {self.first_key: action}
-        else:
-            action = [action]
+        action = {self.first_key: action} if self._env.dict_spaces else [action]
         obs, rews, terminated, truncated, info = self._env.step(action)
-        if self._env.dict_spaces:
-            return (
-                obs[self.first_key],
-                rews[self.first_key],
-                terminated[self.first_key],
-                truncated[self.first_key],
-                info[self.first_key],
-            )
+
         return (
-            obs[0],
-            rews[0],
-            terminated[0],
-            truncated[0],
-            info[0],
+            obs[self.first_key if self._env.dict_spaces else 0],
+            rews[self.first_key if self._env.dict_spaces else 0],
+            terminated[self.first_key if self._env.dict_spaces else 0],
+            truncated[self.first_key if self._env.dict_spaces else 0],
+            info[self.first_key if self._env.dict_spaces else 0],
         )
 
     def render(
@@ -97,3 +84,20 @@ class SKRLSingleAgentWrapper(gym.Env):
             visualize_when_rgb=visualize_when_rgb,
             **kwargs,
         )
+
+
+class SKRLSingleAgentWrapperMPC(SKRLSingleAgentWrapper):
+    """A wrapper that converts an Envioronment to a Gym Env with MPC support."""
+
+    def __init__(self, env: EnvironmentMPC, seed: int = 0):
+        super().__init__(env, seed)
+        if self._env.dict_spaces:
+            self.first_key = list(self._env.observation_space.keys())[0]
+            self.mpc_state_space = _convert_space(
+                self._env.mpc_state_space[self.first_key]
+            )
+        else:
+            self.mpc_state_space = _convert_space(self._env.mpc_state_space[0])
+
+    def mpc_state(self):
+        return self._env.mpc_state()[self.first_key if self._env.dict_spaces else 0]
