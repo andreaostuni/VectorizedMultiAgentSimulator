@@ -84,6 +84,7 @@ mpe_scenarios = sorted(
 social_scenarios = sorted(
     [
         "social_navigation",
+        "social_navigation_accel",
     ]
 )
 """List of the vmas social scenarios """

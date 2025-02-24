@@ -276,14 +276,6 @@ class AgentsPoses(Sensor):
         angles = torch.atan2(relative_poses[..., 1], relative_poses[..., 0])
         velocities_norms = velocities.norm(dim=-1)
 
-        # if torch.linalg.norm(self.agent.state.vel, dim=-1) < 1e-5:
-        #     angles_velocities = torch.atan2(
-        #         velocities[..., 1], velocities[..., 0]
-        #     ) - torch.atan2(self.agent.state.rot.sin(), self.agent.state.rot.cos())
-        # else:
-        #     angles_velocities = torch.atan2(velocities[..., 1], velocities[..., 0]) - (
-        #         torch.atan2(self.agent.state.vel[..., 1], self.agent.state.vel[..., 0])
-        #     )
         zero_vel = torch.where(
             torch.linalg.norm(self.agent.state.vel, dim=-1) < 1e-5,
             torch.tensor(True, device=self._world.device),

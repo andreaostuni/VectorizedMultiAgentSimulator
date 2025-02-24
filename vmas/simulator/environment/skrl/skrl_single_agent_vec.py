@@ -7,7 +7,7 @@ import warnings
 import torch
 import numpy as np
 from vmas.simulator.environment.environment import Environment
-from vmas.simulator.environment.envirnment_mpc import EnvironmentMPC
+from vmas.simulator.environment.environment_mpc import EnvironmentMPC
 
 if (
     importlib.util.find_spec("gymnasium") is not None

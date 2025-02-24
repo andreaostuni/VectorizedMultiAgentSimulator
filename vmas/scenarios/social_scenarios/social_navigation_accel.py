@@ -16,6 +16,7 @@ from vmas.scenarios.social_scenarios.env_utils import env_utils, human_utils
 
 from vmas.simulator.dynamics.diff_drive import DiffDrive
 from vmas.simulator.dynamics.holonomic import Holonomic
+from vmas.simulator.dynamics.diff_drive_acc import DiffDriveAcc
 
 from vmas.simulator.human_dynamics.human_simulation_sfm import HumanSimulation
 
@@ -131,7 +132,7 @@ class Scenario(BaseScenario):
                 render_action=True,
                 obs_range=5.0,
                 max_speed=0.6,
-                u_range=(0.6, 1.5),
+                u_range=(2.0, 1.57),
                 sensors=(
                     [
                         Lidar(
@@ -149,7 +150,7 @@ class Scenario(BaseScenario):
                     if self.collisions
                     else None
                 ),
-                dynamics=DiffDrive(world, integration="rk4"),
+                dynamics=DiffDriveAcc(world, integration="rk4"),
             )
             agent.pos_rew = torch.zeros(batch_dim, device=device)
             agent.agent_collision_rew = agent.pos_rew.clone()
