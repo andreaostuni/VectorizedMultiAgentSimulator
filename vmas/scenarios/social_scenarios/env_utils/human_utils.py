@@ -18,10 +18,11 @@ class Scenario(IntEnum):
     OVERTAKING = 2
     RANDOM = 3
     STATIC = 4
+    EASY = 5
 
     @classmethod
     def sample_scenario(cls):
-        return Scenario(torch.randint(0, len(Scenario), (1,)).item())
+        return Scenario(torch.randint(0, len(Scenario) - 1, (1,)).item())
 
 
 """
@@ -68,6 +69,14 @@ SCENARIOS = {
         "x_spawn_width_factor": 1.0,
         "y_spawn_width_factor": 1.0,
     },
+    Scenario.EASY: {
+        "x_offset_factor": 0.0,  # offset from the center of the world in the x axis
+        "y_offset_factor": 0.0,  # offset from the center of the world in the y axis
+        "x_goal_width_factor": 0.1,
+        "y_goal_width_factor": 0.1,
+        "x_spawn_width_factor": 1.0,
+        "y_spawn_width_factor": 1.0,
+    },
 }
 
 
@@ -89,7 +98,12 @@ def generate_scenario(
     x_direction = 2 * torch.randint(0, 2, (1,)).item() - 1  # -1: down, 1: up
     y_direction = 2 * torch.randint(0, 2, (1,)).item() - 1  # -1: left, 1: right
     robot_spawn_bounds, robot_goal_bounds = generate_robot_bounds(
-        x_bounds, y_bounds, (x_direction, y_direction)
+        x_bounds,
+        y_bounds,
+        (x_direction, y_direction),
+        current_scenario=(
+            current_scenario if current_scenario == Scenario.EASY else None
+        ),
     )
     human_spawn_bounds, human_goal_bounds = generate_human_bounds(
         x_bounds, y_bounds, (x_direction, y_direction), current_scenario
@@ -105,6 +119,9 @@ def generate_scenario(
         robot_goal_bounds[0],
         robot_goal_bounds[1],
         occupied_positions,
+        current_scenario=(
+            current_scenario if current_scenario == Scenario.EASY else None
+        ),
     )
 
     spawn_positions, goal_positions = generate_agents_state(
@@ -181,7 +198,10 @@ def generate_robot_bounds(
     x_bounds: Tuple[float, float],
     y_bounds: Tuple[float, float],
     direction: Tuple[int, int],
+    current_scenario: Optional[Scenario] = None,
 ) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    if current_scenario is not None and current_scenario == Scenario.EASY:
+        return generate_bounds(x_bounds, y_bounds, 0, 0, **SCENARIOS[current_scenario])
     return generate_bounds(
         x_bounds, y_bounds, x_direction=direction[0], y_direction=direction[1]
     )
@@ -241,6 +261,31 @@ def generate_human_bounds(
             )
         case Scenario.STATIC:
             return generate_bounds(x_bounds, y_bounds, 0, 0)
+        case Scenario.EASY:
+            """Spawn the human agents outside the robot spawn area"""
+            # set the human agents spawn outside the world
+            x_bounds_mean = (x_bounds[0] + x_bounds[1]) / 2
+            y_bounds_mean = (y_bounds[0] + y_bounds[1]) / 2
+            x_semi_width = (x_bounds[1] - x_bounds[0]) / 2
+            y_semi_width = (y_bounds[1] - y_bounds[0]) / 2
+
+            new_x_bounds = (
+                x_bounds_mean + 2 * x_semi_width,
+                x_bounds_mean + 3 * x_semi_width,
+            )
+            new_y_bounds = (
+                y_bounds_mean + 2 * y_semi_width,
+                y_bounds_mean + 3 * y_semi_width,
+            )
+
+            return generate_bounds(
+                new_x_bounds,
+                new_y_bounds,
+                -direction[0],
+                -direction[1],
+                **SCENARIOS[current_scenario],
+            )
+
         # TODO: direction list
 
 
@@ -320,8 +365,58 @@ def generate_agents_state(
         dim=1,
     )
 
-    # if env_index is not None:
-    #     spawn_positions = spawn_positions[env_index].unsqueeze(0)
+    if current_scenario is not None and current_scenario == Scenario.EASY:
+        """Generate the goal positions in a radius of 2 meters from the spawn positions"""
+        for agent in agents:
+            # easy_spawn_bounds_x = (
+            #     max((agent.state.pos[:, 0] - 2.0), spawn_x_bounds[0]),
+            #     min((agent.state.pos[:, 0] + 2.0), spawn_x_bounds[1]),
+            # )
+
+            # easy_spawn_bounds_y = (
+            #     max((agent.state.pos[:, 1] - 2.0), spawn_y_bounds[0]),
+            #     min((agent.state.pos[:, 1] + 2.0), spawn_y_bounds[1]),
+            # )
+
+            # occ_goal = torch.cat([occupied_positions, goal_positions], dim=1)
+            # goal_pos = ScenarioUtils.find_random_pos_for_entity(
+            #     occupied_positions=occ_goal,
+            #     env_index=env_index,
+            #     world=world,
+            #     min_dist_between_entities=min_dist_between_entities,
+            #     x_bounds=easy_spawn_bounds_x,
+            #     y_bounds=easy_spawn_bounds_y,
+            # )
+            spawn_pos = (
+                agent.state.pos
+                if env_index is None
+                else agent.state.pos[env_index : env_index + 1]
+            )
+            sign = torch.randint_like(spawn_pos, 0, 2) * 2 - 1
+            goal_pos = spawn_pos + torch.empty_like(spawn_pos).uniform_(1.0, 3.0) * sign
+            goal_pos[:, 0] = torch.clamp(
+                goal_pos[:, 0],
+                min=spawn_x_bounds[0],
+                max=spawn_x_bounds[1],
+            )
+            goal_pos[:, 1] = torch.clamp(
+                goal_pos[:, 1],
+                min=spawn_y_bounds[0],
+                max=spawn_y_bounds[1],
+            )
+
+            goal_positions = torch.cat([goal_positions, goal_pos.unsqueeze(1)], dim=1)
+            agent.goal.set_pos(goal_pos.squeeze(1), batch_index=env_index)
+
+            if env_index is None:
+                agent.pos_shaping = torch.linalg.norm(
+                    agent.goal.state.pos - agent.state.pos, dim=1
+                )
+            else:
+                agent.pos_shaping[env_index] = torch.linalg.norm(
+                    agent.goal.state.pos[env_index] - agent.state.pos[env_index]
+                ).unsqueeze(0)
+        return spawn_positions, goal_positions
 
     if current_scenario is not None and current_scenario >= Scenario.RANDOM:
         sign = 1 if current_scenario == Scenario.STATIC else -1

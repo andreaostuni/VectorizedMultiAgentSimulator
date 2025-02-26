@@ -55,9 +55,11 @@ class Scenario(BaseScenario):
 
         self.shared_rew = kwargs.pop("shared_rew", True)
         self.pos_shaping_factor = kwargs.pop("pos_shaping_factor", 1)
-        self.final_reward = kwargs.pop("final_reward", 0.01)
+        self.final_reward = kwargs.pop("final_reward", 1000)
 
         self.agent_collision_penalty = kwargs.pop("agent_collision_penalty", -400)
+        self.scenario_type = kwargs.pop("human_scenario_type", None)
+        # self.scenario_type = kwargs.pop("scenario_type", human_utils.Scenario.EASY)
         self.dt = kwargs.pop("dt", 0.1)
         ScenarioUtils.check_kwargs_consumed(kwargs)
 
@@ -143,7 +145,9 @@ class Scenario(BaseScenario):
                         AgentsPoses(
                             world,
                             entity_filter=entity_filter_agents,
-                            neighbors=3,
+                            neighbors=min(
+                                3, self.n_agents + self.n_scripted_agents - 1
+                            ),
                         ),
                     ]
                     if self.collisions
@@ -233,8 +237,10 @@ class Scenario(BaseScenario):
             x_semidim = self.x_semidim_mean
             y_semidim = self.y_semidim_mean
 
-            scenario_type = human_utils.Scenario.sample_scenario()
-            # scenario_type = human_utils.Scenario.RANDOM
+            if self.scenario_type is not None:
+                scenario_type = self.scenario_type
+            else:
+                scenario_type = human_utils.Scenario.sample_scenario()
 
             # TODO - make boundaries variable
             # use the world_spawning_x as a mean
@@ -346,12 +352,12 @@ class Scenario(BaseScenario):
                     latest_state[:, :2] - latest_state[:, 5:7], dim=-1
                 )
                 forward_movement = previous_distance_to_goal - distance_to_goal
-                self.Rd = forward_movement * 10.0
-                self.Rd.clamp(min=-1.0, max=1.0)
+                self.Rd = forward_movement * 35.0
+                self.Rd.clamp(min=-3.0, max=3.0)
 
             # [reward] Heading towards the goal
 
-            ch = 0.4
+            ch = 0.6
             # check if the agent is moving towards the goal
             # the direction of the agent is the nomalized velocity
             # the direction to the goal is the normalized vector from the agent to the goal
@@ -406,10 +412,10 @@ class Scenario(BaseScenario):
             rew = (
                 self.Rd * cd
                 + self.Rh * ch
-                + self.Rv * cv
-                + self.Ro * co
-                + self.Rp * cp
-                + self.Rs * cs
+                # + self.Rv * cv
+                # + self.Ro * co
+                # + self.Rp * cp
+                # + self.Rs * cs
             )
             # [penalty] time penalty
             rew = rew - 0.5
@@ -437,7 +443,7 @@ class Scenario(BaseScenario):
             )
             self.is_collision_with_obstacles = is_collision_with_obstacles.any(dim=-1)
 
-            rew = rew - 400 * (
+            rew = rew - 200 * (
                 self.is_collision_with_agents | self.is_collision_with_obstacles
             )
 
@@ -471,9 +477,7 @@ class Scenario(BaseScenario):
             [
                 agent.state.pos,
                 agent.state.rot,
-                # agent.state.vel,
-                # agent.state.ang_vel,
-                agent.state.vel.norm(dim=-1).unsqueeze(-1),
+                # agent.state.vel.norm(dim=-1).unsqueeze(-1),
             ],
             dim=-1,
         )
@@ -496,8 +500,8 @@ class Scenario(BaseScenario):
         )
         is_done = (
             self.goal_reached  # check if agent is on goal
-            # | self.is_collision_with_agents
-            # | self.is_collision_with_obstacles
+            | self.is_collision_with_agents
+            | self.is_collision_with_obstacles
         )
         return is_done
 
