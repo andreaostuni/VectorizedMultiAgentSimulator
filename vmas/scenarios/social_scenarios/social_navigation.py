@@ -351,12 +351,14 @@ class Scenario(BaseScenario):
                     latest_state[:, :2] - latest_state[:, 5:7], dim=-1
                 )
                 forward_movement = previous_distance_to_goal - distance_to_goal
-                self.Rd = forward_movement * 35.0
-                self.Rd.clamp(min=-3.0, max=3.0)
+                self.Rd = forward_movement * (
+                    35.0 if self.scenario_type == human_utils.Scenario.EASY else 20.0
+                )
+                self.Rd.clamp(min=-2.0, max=2.0)
 
             # [reward] Heading towards the goal
 
-            ch = 0.6
+            ch = 0.6 if self.scenario_type == human_utils.Scenario.EASY else 0.3
             # check if the agent is moving towards the goal
             # the direction of the agent is the nomalized velocity
             # the direction to the goal is the normalized vector from the agent to the goal
@@ -379,7 +381,7 @@ class Scenario(BaseScenario):
             self.Rh = 1.0 - 2 * torch.sqrt(torch.abs(angle / torch.pi))
 
             # [penalty] linear velocity
-            cv = 0.8
+            cv = 0.6
             # check if the agent is moving too slow
 
             self.Rv = (
@@ -388,7 +390,7 @@ class Scenario(BaseScenario):
 
             # [penalty] Obstacle avoidance
 
-            co = 2.0
+            co = 0.8
             # min distance to the obstacles
             # TODO get it from the human simulation
             # use the lidar sensor to get the distance to the obstacles
@@ -398,13 +400,13 @@ class Scenario(BaseScenario):
             )[0] / agent.sensors[0]._max_range
 
             # [penalty] social disturbance
-            cp = 2.0
+            cp = 1.0
             self.Rp = -torch.clamp(
-                1 / (agent.sensors[1].measure()[:, 0]).min(dim=-1)[0], min=0.0, max=2.5
+                1 / (agent.sensors[1].measure()[:, 0]).min(dim=-1)[0], min=0.0, max=2.0
             )
-            cs = 2.5
-            self.Rs = self.human_simulation.social_work[:, agent_index]
-            self.Rs = -torch.clamp(self.Rs, min=0.0, max=2.5)
+            cs = 1.0
+            self.Rs = 10 * self.human_simulation.social_work[:, agent_index]
+            self.Rs = -torch.clamp(self.Rs, min=0.0, max=2.0)
 
             # rew = Rd * cd + Rh * ch + Rv * cv + Ro * co + Rp * cp + Rs * cs
 
@@ -420,7 +422,7 @@ class Scenario(BaseScenario):
                     + self.Rs * cs
                 )
             # [penalty] time penalty
-            rew = rew - 0.5
+            rew = rew - 0.15
 
             # [reward] goal reached
             # check if the agent is on the goal
@@ -445,7 +447,7 @@ class Scenario(BaseScenario):
             )
             self.is_collision_with_obstacles = is_collision_with_obstacles.any(dim=-1)
 
-            rew = rew - 1500 * (
+            rew = rew - 600 * (
                 self.is_collision_with_agents | self.is_collision_with_obstacles
             )
 
