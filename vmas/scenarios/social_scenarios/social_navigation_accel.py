@@ -409,14 +409,17 @@ class Scenario(BaseScenario):
 
             # rew = Rd * cd + Rh * ch + Rv * cv + Ro * co + Rp * cp + Rs * cs
 
-            rew = (
-                self.Rd * cd
-                + self.Rh * ch
-                + self.Rv * cv
-                + self.Ro * co
-                + self.Rp * cp
-                + self.Rs * cs
-            )
+            if self.scenario_type == human_utils.Scenario.EASY:
+                rew = self.Rd * cd + self.Rh * ch
+            else:
+                rew = (
+                    self.Rd * cd
+                    + self.Rh * ch
+                    + self.Rv * cv
+                    + self.Ro * co
+                    + self.Rp * cp
+                    + self.Rs * cs
+                )
             # [penalty] time penalty
             rew = rew - 0.5
 
@@ -443,7 +446,7 @@ class Scenario(BaseScenario):
             )
             self.is_collision_with_obstacles = is_collision_with_obstacles.any(dim=-1)
 
-            rew = rew - 200 * (
+            rew = rew - 1500 * (
                 self.is_collision_with_agents | self.is_collision_with_obstacles
             )
 
