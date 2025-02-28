@@ -80,7 +80,7 @@ class SKRLSingleAgentWrapper(gym.Env):
     ) -> Optional[np.ndarray]:
         return self._env.render(
             env_index=0,
-            agent_index_focus=0,
+            agent_index_focus=None,
             visualize_when_rgb=visualize_when_rgb,
             **kwargs,
         )
