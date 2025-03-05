@@ -82,9 +82,6 @@ mpe_scenarios = sorted(
 """List of the vmas MPE scenarios """
 
 social_scenarios = sorted(
-    [
-        "social_navigation",
-        "social_navigation_accel",
-    ]
+    ["social_navigation", "social_navigation_accel", "social_navigation_rew_exp"]
 )
 """List of the vmas social scenarios """

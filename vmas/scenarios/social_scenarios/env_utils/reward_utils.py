@@ -6,7 +6,7 @@ def get_root_mean_square(arr: torch.Tensor) -> float:
 
 
 def normalize(arr: torch.Tensor, lims: torch.Tensor) -> torch.Tensor:
-    return (arr - lims[0]) / (lims[1] - lims[0])
+    return (arr - lims[:, 0]) / (lims[:, 1] - lims[:, 0])
 
 
 def mog_reward(
@@ -31,8 +31,11 @@ def mog_reward(
         it is a tensor of shape (num_envs,)."""
 
     # calculate the distance between the objectives and the centers
-    distances = torch.square(objectives - centers)
+    #
+    # The distance is calculated using the Euclidean distance
+    # between the objectives and the centers.
 
+    distances = torch.sqrt(torch.square(objectives - centers))
     # normalize and clip the distances (between 0 and 1) using the limits
     distances_nor = torch.clip(normalize(distances, lims), 0.0, 1.0)
 
